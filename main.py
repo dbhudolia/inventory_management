@@ -24,8 +24,7 @@ helper.init_db()
 def check_network_authorization():
     # 1. Define your authorized office / godown public IP addresses
     ALLOWED_IPS = [
-        "49.37.26.239",
-        "35.197.92.111"
+        "49.37.26.239"
     ]
 
     # 2. Fetch the current visitor's external network IP route safely
