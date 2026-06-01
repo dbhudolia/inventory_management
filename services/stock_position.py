@@ -48,7 +48,7 @@ def stock_position_summary():
         SELECT 
             invoice_no, size, finish, material, type, mica_type, weight,
             -- Formats strings like "1A1(5 packets)"
-            (godown || rack || '(' || COUNT(id) || ' packets)') AS rack_summary
+            (godown || ' ' || rack || '(' || COUNT(id) || ' packets)') AS rack_summary
         FROM stock
         WHERE status = 'Available' AND weight > 0
         GROUP BY invoice_no, size, finish, material, type, mica_type, weight, godown, rack
