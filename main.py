@@ -21,38 +21,6 @@ st.set_page_config(
 
 helper.init_db()
 
-def check_network_authorization():
-    # 1. Define your authorized office / godown public IP addresses
-    ALLOWED_IPS = [
-        "49.37.26.239",
-    ]
-
-    # 2. Fetch the current visitor's external network IP route safely
-    try:
-        # Calls a secure plain-text IP echoing endpoint
-        current_ip = urllib.request.urlopen('https://api.ipify.org', timeout=3).read().decode('utf8')
-    except Exception:
-        try:
-            # Fallback provider if the primary checker drops offline
-            current_ip = urllib.request.urlopen('https://icanhazip.com', timeout=3).read().decode('utf8').strip()
-        except Exception:
-            st.error("🔒 Security Framework Connection Timeout. Unable to verify network gateway profiles.")
-            st.stop()
-
-    # 3. Validation Gateway Gatekeeper Loop
-    if current_ip not in ALLOWED_IPS:
-        st.error("### 🚫 Access Denied: Unauthorized Network Location")
-        st.write(
-            f"Your device network routing profile (**{current_ip}**) is not registered on the company access whitelist.")
-        st.info(
-            "⚠️ Please connect to the official office broadband line or contact administration to register this network point.")
-        # Stops execution immediately so no warehouse pages or data connections are rendered
-        st.stop()
-
-
-# TRIGGER THE PROTECTION SUITE IMMEDIATELY BEFORE RENDERING PAGES
-# check_network_authorization()
-
 # --- AUTHENTICATION LOGIC ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False

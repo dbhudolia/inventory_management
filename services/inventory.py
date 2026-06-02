@@ -1,17 +1,27 @@
 import streamlit as st
-import sqlite3
+import psycopg2
 import pandas as pd
 
+def get_db_connection():
+    """Establishes a password-safe connection to Supabase using separate parameters."""
+    conn = psycopg2.connect(
+        host=st.secrets["postgres"]["host"],
+        database=st.secrets["postgres"]["database"],
+        user=st.secrets["postgres"]["user"],
+        password=st.secrets["postgres"]["password"],
+        port=st.secrets["postgres"]["port"]
+    )
+    return conn
 
 def inventory_management():
     st.title("📊 Mica Warehouse Dashboard")
 
-    # --- DATA FETCHING ---
-    conn = sqlite3.connect('inventory.db')
+    # --- DATA FETCHING (CLOUD POSTGRESQL) ---
+    conn = get_db_connection()
 
-    # Fetching the core metrics
+    # "type" is wrapped in double quotes because it is a reserved SQL keyword in PostgreSQL
     metrics_query = """
-    SELECT size, material, mica_type, type, weight 
+    SELECT size, material, mica_type, "type", weight 
     FROM stock 
     WHERE status = 'Available' AND weight > 0
     """
@@ -50,46 +60,46 @@ def inventory_management():
 
     st.divider()
 
-    # --- ROW 2: DETAILED BREAKDOWN (FIXED WEIGHT SUM LOGIC) ---
+    # --- ROW 2: DETAILED BREAKDOWN (POSTGRESQL COMPATIBLE) ---
     st.subheader("📏 Inventory Breakdown by Size & Finish")
 
-    # This query calculates the absolute raw SUM(weight) while cleanly grouping location text
+    # Fixed: group_concat replaced with string_agg, and "type" is double-quoted safely
     breakdown_query = """
         SELECT 
-            main.size AS [Size], 
-            main.finish AS [Finish], 
-            main.mica_type AS [Mica], 
-            main.material AS [Material], 
-            main.type AS [Type],
-            -- Core Fix: We calculate the true sum of weights from the raw rows matching these groups
+            main.size AS "Size", 
+            main.finish AS "Finish", 
+            main.mica_type AS "Mica", 
+            main.material AS "Material", 
+            main.type AS "Type",
+            -- Core Subquery: Calculates absolute raw sum across matching groups
             (SELECT SUM(weight) FROM stock 
              WHERE size = main.size 
                AND finish = main.finish 
                AND mica_type = main.mica_type 
                AND material = main.material 
-               AND type = main.type 
-               AND status = 'Available' AND weight > 0) AS [Total Weight (KG)],
-            group_concat(main.location_summary, ', ') AS [Locations & Packets]
+               AND "type" = main.type 
+               AND status = 'Available' AND weight > 0) AS "Total Weight (KG)",
+            string_agg(main.location_summary, ', ') AS "Locations & Packets"
         FROM (
             SELECT 
                 size, 
                 finish, 
                 mica_type, 
                 material,
-                type,
+                "type" AS type,
                 (godown || ' ' || rack || ':' || COUNT(id) || ' packets') AS location_summary
             FROM stock
             WHERE status = 'Available' AND weight > 0
-            GROUP BY size, finish, mica_type, material, type, godown, rack
+            GROUP BY size, finish, mica_type, material, "type", godown, rack
         ) AS main
         GROUP BY main.size, main.finish, main.mica_type, main.material, main.type
-        ORDER BY [Total Weight (KG)] DESC
+        ORDER BY "Total Weight (KG)" DESC
         """
 
     summary_df = pd.read_sql(breakdown_query, conn)
     conn.close()
 
-    # Displaying the final table with the correct mathematical weights
+    # Displaying the final table with the correct mathematical weights and hidden index column
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
     # --- LOW STOCK WARNINGS ---
@@ -99,4 +109,4 @@ def inventory_management():
     if not low_stock.empty:
         with st.expander("⚠️ Low Stock Alerts (Below 20 KG)", expanded=False):
             st.write("Consider reordering the following specific variations:")
-            st.table(low_stock, hide_index=True)
+            st.table(low_stock)

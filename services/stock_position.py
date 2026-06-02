@@ -1,18 +1,29 @@
 import streamlit as st
-import sqlite3
+import psycopg2
 import pandas as pd
 
+def get_db_connection():
+    """Establishes a password-safe connection to Supabase using separate parameters."""
+    conn = psycopg2.connect(
+        host=st.secrets["postgres"]["host"],
+        database=st.secrets["postgres"]["database"],
+        user=st.secrets["postgres"]["user"],
+        password=st.secrets["postgres"]["password"],
+        port=st.secrets["postgres"]["port"]
+    )
+    return conn
 
 def stock_position_summary():
     st.title("📦 Stock Position Summary")
-    st.info(
-        "Consolidated overview: Rows are compressed by item specifications to show packet counts and rack distribution.")
+    st.info("Consolidated overview: Rows are compressed by item specifications to show packet counts and rack distribution.")
 
-    conn = sqlite3.connect('inventory.db')
+    conn = get_db_connection()
 
     # --- FETCH DYNAMIC DROPDOWN FILTER OPTIONS ---
+    # "type" is double-quoted for PostgreSQL and aliased to lowercase for pandas matching
     filter_data = pd.read_sql(
-        "SELECT mica_type, material, type, finish FROM stock WHERE status = 'Available' AND weight > 0", conn)
+        'SELECT mica_type, material, "type" AS type, finish FROM stock WHERE status = \'Available\' AND weight > 0', conn
+    )
 
     with st.expander("🛠️ Filter Stock Position (Click to Expand)", expanded=True):
         f1, f2, f3 = st.columns(3)
@@ -24,37 +35,37 @@ def stock_position_summary():
         finish_filter = f4.multiselect("Finish", options=filter_data['finish'].unique(), placeholder="All Finishes")
         text_search = st.text_input("Search by Invoice #, Size (e.g., 5*1000), or Rack name")
 
-    # --- CONSOLIDATED PACKET QUERY (GROUPED BY SPEC + WEIGHT) ---
-    # This compresses exact matches and sums their packet counts and weights
+    # --- CONSOLIDATED PACKET QUERY (POSTGRESQL COMPATIBLE) ---
+    # Fixed: group_concat replaced with string_agg, and "type" is double-quoted cleanly
     base_query = """
     SELECT 
-        main.invoice_no AS [Invoice #],
-        main.size AS [Size], 
-        main.finish AS [Finish], 
-        main.material AS [Material], 
-        main.type AS [Type],
-        main.mica_type AS [Mica Type], 
-        main.weight AS [Unit Weight (KG)],
+        main.invoice_no AS "Invoice #",
+        main.size AS "Size", 
+        main.finish AS "Finish", 
+        main.material AS "Material", 
+        main.type AS "Type",
+        main.mica_type AS "Mica Type", 
+        main.weight AS "Unit Weight (KG)",
         (SELECT COUNT(id) FROM stock 
          WHERE invoice_no = main.invoice_no AND size = main.size AND finish = main.finish 
-           AND material = main.material AND type = main.type AND mica_type = main.mica_type 
-           AND weight = main.weight AND status = 'Available') AS [Total Packets],
+           AND material = main.material AND "type" = main.type AND mica_type = main.mica_type 
+           AND weight = main.weight AND status = 'Available') AS "Total Packets",
         (SELECT SUM(weight) FROM stock 
          WHERE invoice_no = main.invoice_no AND size = main.size AND finish = main.finish 
-           AND material = main.material AND type = main.type AND mica_type = main.mica_type 
-           AND weight = main.weight AND status = 'Available') AS [Total Weight (KG)],
-        group_concat(main.rack_summary, ', ') AS [Rack Distribution]
+           AND material = main.material AND "type" = main.type AND mica_type = main.mica_type 
+           AND weight = main.weight AND status = 'Available') AS "Total Weight (KG)",
+        string_agg(main.rack_summary, ', ') AS "Rack Distribution"
     FROM (
         SELECT 
-            invoice_no, size, finish, material, type, mica_type, weight,
-            -- Formats strings like "1A1(5 packets)"
+            invoice_no, size, finish, material, "type" AS type, mica_type, weight,
+            -- Formats strings like "Godown 1 1A1(5 packets)"
             (godown || ' ' || rack || '(' || COUNT(id) || ' packets)') AS rack_summary
         FROM stock
         WHERE status = 'Available' AND weight > 0
-        GROUP BY invoice_no, size, finish, material, type, mica_type, weight, godown, rack
+        GROUP BY invoice_no, size, finish, material, "type", mica_type, weight, godown, rack
     ) AS main
     GROUP BY main.invoice_no, main.size, main.finish, main.material, main.type, main.mica_type, main.weight
-    ORDER BY [Total Weight (KG)] DESC
+    ORDER BY "Total Weight (KG)" DESC
     """
 
     df_position = pd.read_sql(base_query, conn)
@@ -75,12 +86,11 @@ def stock_position_summary():
         df_position = df_position[df_position['Finish'].isin(finish_filter)]
 
     if text_search:
-        # regex=False ensures sizes like '5*1000' work perfectly
         df_position = df_position[
             df_position['Invoice #'].str.contains(text_search, case=False, regex=False) |
             df_position['Size'].str.contains(text_search, case=False, regex=False) |
             df_position['Rack Distribution'].str.contains(text_search, case=False, regex=False)
-            ]
+        ]
 
     # --- DISPLAY CONSOLIDATED POSITION ---
     st.divider()

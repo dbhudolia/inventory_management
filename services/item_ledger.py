@@ -1,24 +1,32 @@
 import streamlit as st
-import sqlite3
+import psycopg2
 import pandas as pd
 
+def get_db_connection():
+    """Establishes a password-safe connection to Supabase using separate parameters."""
+    conn = psycopg2.connect(
+        host=st.secrets["postgres"]["host"],
+        database=st.secrets["postgres"]["database"],
+        user=st.secrets["postgres"]["user"],
+        password=st.secrets["postgres"]["password"],
+        port=st.secrets["postgres"]["port"]
+    )
+    return conn
 
 def item_ledger_management():
     st.title("📋 Product Variant Lifecycle Ledger")
-    st.info(
-        "Select specific product attributes or choose 'All' to trace incoming entries, sales logs, and current balances.")
+    st.info("Select specific product attributes or choose 'All' to trace incoming entries, sales logs, and current balances.")
 
-    conn = sqlite3.connect('inventory.db')
+    conn = get_db_connection()
 
-    # Fetch unique values to populate search filters dynamically
-    setup_df = pd.read_sql("SELECT DISTINCT size, mica_type, finish, material, type FROM stock", conn)
+    # "type" is escaped with double quotes for PostgreSQL but alias keeps it lowercase for pandas
+    setup_df = pd.read_sql('SELECT DISTINCT size, mica_type, finish, material, "type" AS type FROM stock', conn)
 
     # --- SPECIFICATION SELECTOR BAR (WITH 'ALL' OPTIONS) ---
     with st.container():
         st.subheader("🔍 Filter Product History")
         col1, col2, col3 = st.columns(3)
 
-        # We append "All" to the front of every unique value array
         selected_size = col1.selectbox("Size", options=["All"] + list(setup_df['size'].unique()))
         selected_mica = col2.selectbox("Mica Type", options=["All"] + list(setup_df['mica_type'].unique()))
         selected_finish = col3.selectbox("Finish", options=["All"] + list(setup_df['finish'].unique()))
@@ -34,34 +42,33 @@ def item_ledger_management():
     params = []
 
     if selected_size != "All":
-        where_clauses.append("size = ?")
+        where_clauses.append("size = %s")
         params.append(selected_size)
     if selected_mica != "All":
-        where_clauses.append("mica_type = ?")
+        where_clauses.append("mica_type = %s")
         params.append(selected_mica)
     if selected_finish != "All":
-        where_clauses.append("finish = ?")
+        where_clauses.append("finish = %s")
         params.append(selected_finish)
     if selected_material != "All":
-        where_clauses.append("material = ?")
+        where_clauses.append("material = %s")
         params.append(selected_material)
     if selected_type != "All":
-        where_clauses.append("type = ?")
+        where_clauses.append('"type" = %s')  # Double-quoted to protect keyword in PostgreSQL
         params.append(selected_type)
 
-    # Combine clauses; if all are "All", it grabs everything
     where_string = " AND ".join(where_clauses) if where_clauses else "1=1"
 
     # --- 1. FETCH ALL INWARD RECORDS (RAW ENTRIES) ---
     inward_query = f"""
     SELECT 
-        id AS [Batch ID],
-        invoice_no AS [Incoming Invoice #],
-        weight AS [Current Weight Left (KG)],
-        godown AS [Godown],
-        rack AS [Rack],
-        status AS [Current Status],
-        received_at AS [Received Date]
+        id AS "Batch ID",
+        invoice_no AS "Incoming Invoice #",
+        weight AS "Current Weight Left (KG)",
+        godown AS "Godown",
+        rack AS "Rack",
+        status AS "Current Status",
+        received_at AS "Received Date"
     FROM stock
     WHERE {where_string}
     ORDER BY id DESC
@@ -71,13 +78,13 @@ def item_ledger_management():
     # --- 2. FETCH ALL OUTWARD RECORDS (SALES LOGS) ---
     sales_query = f"""
     SELECT 
-        id AS [Sales ID],
-        company_name AS [Buyer Company],
-        qty_sold AS [Qty Sold (KG)],
-        price_per_kg AS [Rate/KG],
-        total_amount AS [Total Revenue],
-        sale_date AS [Sale Date],
-        notes AS [Special Notes]
+        id AS "Sales ID",
+        company_name AS "Buyer Company",
+        qty_sold AS "Qty Sold (KG)",
+        price_per_kg AS "Rate/KG",
+        total_amount AS "Total Revenue",
+        sale_date AS "Sale Date",
+        notes AS "Special Notes"
     FROM sales
     WHERE {where_string}
     ORDER BY id DESC
@@ -85,7 +92,6 @@ def item_ledger_management():
     sales_df = pd.read_sql(sales_query, conn, params=params)
 
     # --- 3. FIX WEIGHT MATHEMATICS METRICS ---
-    # Current available physical warehouse stock remaining right now
     current_stock_query = f"""
     SELECT SUM(weight) FROM stock 
     WHERE {where_string} AND status = 'Available' AND weight > 0
@@ -93,17 +99,16 @@ def item_ledger_management():
     cursor = conn.cursor()
     cursor.execute(current_stock_query, params)
     total_left = cursor.fetchone()[0]
-    total_left = total_left if total_left else 0.0
+    total_left = float(total_left) if total_left else 0.0
+    cursor.close()
 
     # Calculate total weight ever sold from the sales tracking table
     total_sold_weight = sales_df['Qty Sold (KG)'].sum() if not sales_df.empty else 0.0
 
-    # CORE METRIC FIX: Total Ever Received = What is Left Now + What was historically Sold
+    # Total Ever Received calculation
     total_inward_weight = total_left + total_sold_weight
 
     # --- DISPLAY LEDGER INTERFACE ---
-
-    # Summary Dashboard Cards
     m1, m2, m3 = st.columns(3)
     m1.metric("Total Ever Received (Fixed)", f"{total_inward_weight:,.2f} KG")
     m2.metric("Total Quantities Sold", f"{total_sold_weight:,.2f} KG")

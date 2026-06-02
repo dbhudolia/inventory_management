@@ -1,13 +1,25 @@
 import streamlit as st
-import sqlite3
+import psycopg2
 import pandas as pd
+
+
+def get_db_connection():
+    """Establishes a password-safe connection to Supabase using separate parameters."""
+    conn = psycopg2.connect(
+        host=st.secrets["postgres"]["host"],
+        database=st.secrets["postgres"]["database"],
+        user=st.secrets["postgres"]["user"],
+        password=st.secrets["postgres"]["password"],
+        port=st.secrets["postgres"]["port"]
+    )
+    return conn
 
 
 def inventory_search_management():
     st.title("🔍 Advanced Inventory Search & Rack Breakdown")
     st.info("Select a Godown and Rack to see a compressed packet breakdown of weights, or use global filters.")
 
-    conn = sqlite3.connect('inventory.db')
+    conn = get_db_connection()
 
     # -------------------------------------------------------------
     # NEW FEATURE: GODOWN & RACK PACKET BREAKDOWN
@@ -15,13 +27,11 @@ def inventory_search_management():
     st.subheader("📦 Rack-Wise Packet Breakdown")
     st.write("See a consolidated summary of items and packet counts for a specific location.")
 
-    # Quick database pull to get valid locations for the dropdowns
     loc_df = pd.read_sql("SELECT DISTINCT godown, rack FROM stock WHERE status = 'Available' AND weight > 0", conn)
 
     b_col1, b_col2 = st.columns(2)
     selected_g = b_col1.selectbox("Choose Godown for Breakdown", options=[""] + list(loc_df['godown'].unique()))
 
-    # Filter rack choices based on selected godown
     if selected_g:
         available_racks = loc_df[loc_df['godown'] == selected_g]['rack'].unique()
     else:
@@ -29,22 +39,22 @@ def inventory_search_management():
 
     selected_r = b_col2.selectbox("Choose Rack for Breakdown", options=[""] + list(available_racks))
 
-    # If both are selected, generate the single-line packet summary
     if selected_g and selected_r:
+        # "type" is wrapped in double quotes for PostgreSQL compatibility
         breakdown_query = """
         SELECT 
-            invoice_no AS [Invoice #], 
-            size AS [Size], 
-            finish AS [Finish], 
-            material AS [Material], 
-            type AS [Type], 
-            mica_type AS [Mica Type], 
-            weight AS [Weight (KG)],
-            COUNT(id) AS [Total Packets],
-            SUM(weight) AS [Total Weight (KG)]
+            invoice_no AS "Invoice #", 
+            size AS "Size", 
+            finish AS "Finish", 
+            material AS "Material", 
+            "type" AS "Type", 
+            mica_type AS "Mica Type", 
+            weight AS "Weight (KG)",
+            COUNT(id) AS "Total Packets",
+            SUM(weight) AS "Total Weight (KG)"
         FROM stock 
-        WHERE godown = ? AND rack = ? AND status = 'Available' AND weight > 0
-        GROUP BY invoice_no, size, finish, material, type, mica_type, weight
+        WHERE godown = %s AND rack = %s AND status = 'Available' AND weight > 0
+        GROUP BY invoice_no, size, finish, material, "type", mica_type, weight
         """
         breakdown_df = pd.read_sql(breakdown_query, conn, params=(selected_g, selected_r))
 
@@ -60,9 +70,8 @@ def inventory_search_management():
     # MAIN ADVANCED GLOBAL SEARCH
     # -------------------------------------------------------------
     st.subheader("🕵️ Global Inventory Search Filters")
-    # 1. FETCH ALL ACTIVE STOCK (Row-by-Row View with IDs)
     query = """
-        SELECT id, invoice_no, size, finish, material, type, mica_type, weight, godown, rack, status 
+        SELECT id, invoice_no, size, finish, material, "type", mica_type, weight, godown, rack, status 
         FROM stock 
         WHERE weight > 0 AND status = 'Available'
         """
@@ -73,7 +82,6 @@ def inventory_search_management():
         conn.close()
         return
 
-    # --- FILTER SECTION ---
     with st.expander("🛠️ Search Filters (Click to Expand)", expanded=True):
         f1, f2, f3 = st.columns(3)
         mica_filter = f1.multiselect("Mica Type", options=df['mica_type'].unique(), placeholder="All Mica")
@@ -83,13 +91,11 @@ def inventory_search_management():
         f4, f5, f6 = st.columns(3)
         finish_filter = f4.multiselect("Finish", options=df['finish'].unique(), placeholder="All Finishes")
         godown_filter = f5.multiselect("Godown Location", options=df['godown'].unique(), placeholder="All Godowns")
-        # ADDED: Rack filter dropdown for the global row-by-row search
         rack_filter = f6.multiselect("Specific Rack / Row", options=df['rack'].unique(), placeholder="All Racks")
 
         st.divider()
         text_search = st.text_input("Global Text Search (Invoice #, Size like 5*1000)")
 
-    # --- APPLY FILTERS TO DATAFRAME ---
     if mica_filter: df = df[df['mica_type'].isin(mica_filter)]
     if mat_filter: df = df[df['material'].isin(mat_filter)]
     if type_filter: df = df[df['type'].isin(type_filter)]
@@ -98,14 +104,12 @@ def inventory_search_management():
     if rack_filter: df = df[df['rack'].isin(rack_filter)]
 
     if text_search:
-        # regex=False ensures sizes like 5*1000 don't cause crashes
         df = df[
             df['invoice_no'].str.contains(text_search, case=False, regex=False) |
             df['size'].str.contains(text_search, case=False, regex=False) |
             df['rack'].str.contains(text_search, case=False, regex=False)
             ]
 
-    # --- DISPLAY RESULTS ---
     st.subheader(f"Found {len(df)} Matching Individual Batches")
     st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -115,7 +119,19 @@ def inventory_search_management():
     st.markdown("---")
     st.subheader("🛠️ Inventory Management Panel")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["✏️ Edit Stock Entry", "💰 Update Sales Prices", "🗑️ Delete Single Entry", "💥 Clear Entire Rack"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "✏️ Edit Stock Entry",
+        "💰 Edit Sales Records",
+        "❌ Cancel/Delete Sales Entry",
+        "🗑️ Delete Stock Entry",
+        "💥 Clear Entire Rack"
+    ])
+
+    df_all_sales = pd.read_sql("""
+        SELECT id AS "Sales ID", sale_date AS "Date", company_name AS "Company", 
+               size AS "Size", qty_sold AS "Qty Sold (KG)", price_per_kg AS "Rate/KG", stock_id 
+        FROM sales ORDER BY id DESC
+    """, conn)
 
     # TAB 1: EDIT SINGLE ENTRY VALUES
     with tab1:
@@ -144,8 +160,10 @@ def inventory_search_management():
 
                 with e_col2:
                     new_mica = st.selectbox("Mica Type", ["Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"],
-                                            index=["Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"].index(current_row['mica_type']) if
-                                            current_row['mica_type'] in ["Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"] else 0,
+                                            index=["Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"].index(
+                                                current_row['mica_type']) if
+                                            current_row['mica_type'] in ["Muscovite", "Phlogopite", "Phlogopite(EV)",
+                                                                         "N/A"] else 0,
                                             disabled=is_epoxy_edit)
                     new_type = st.selectbox("Stock Type", ["Fresh", "Seconds", "Cut", "Open"],
                                             index=["Fresh", "Seconds", "Cut", "Open"].index(current_row['type']) if
@@ -167,32 +185,22 @@ def inventory_search_management():
                     cursor_edit = conn.cursor()
                     cursor_edit.execute("""
                         UPDATE stock 
-                        SET size = ?, finish = ?, material = ?, type = ?, mica_type = ?, weight = ?, godown = ?, rack = ? 
-                        WHERE id = ?
+                        SET size = %s, finish = %s, material = %s, "type" = %s, mica_type = %s, weight = %s, godown = %s, rack = %s 
+                        WHERE id = %s
                     """, (new_size, final_finish, new_material, new_type, final_mica, new_weight, new_godown, new_rack,
-                          edit_id))
+                          int(edit_id)))
                     conn.commit()
+                    cursor_edit.close()
                     st.success(f"Item ID {edit_id} updated successfully!")
                     st.rerun()
         elif edit_id:
             st.warning(f"ID {edit_id} is not found or not available.")
 
+    # TAB 2: EDIT RECENT SALES ENTRIES
     with tab2:
-        st.write("Modify the Company, Price/KG, or Sold Quantity of an issued transaction.")
-
-        conn_sales = sqlite3.connect('inventory.db')
-
-        # Pull ALL historical sales data first so we can apply filters to it
-        df_all_sales = pd.read_sql("""
-            SELECT id AS [Sales ID], sale_date AS [Date], company_name AS [Company], 
-                   size AS [Size], qty_sold AS [Qty Sold (KG)], price_per_kg AS [Rate/KG], stock_id
-            FROM sales ORDER BY id DESC
-        """, conn_sales)
-
         if df_all_sales.empty:
             st.info("No transaction tracking history recorded to edit yet.")
         else:
-            # NEW: Filter block specifically for narrowing down sales records
             st.markdown("##### 🔍 Step 1: Filter Sales Logs")
             sf1, sf2 = st.columns(2)
 
@@ -202,7 +210,6 @@ def inventory_search_management():
             size_opts = ["All Sizes"] + list(df_all_sales['Size'].unique())
             selected_sales_size = sf2.selectbox("Filter Sales by Sheet Size", size_opts, key="sales_filter_size")
 
-            # Apply the filter selections
             df_filtered_sales = df_all_sales.copy()
             if selected_sales_comp != "All Companies":
                 df_filtered_sales = df_filtered_sales[df_filtered_sales['Company'] == selected_sales_comp]
@@ -218,7 +225,6 @@ def inventory_search_management():
             if df_filtered_sales.empty:
                 st.warning("No sales logs match the company and size selected above.")
             else:
-                # NEW: Dropdown selector that contains ONLY the highly filtered choices
                 sales_options = {
                     f"Sales ID: {row['Sales ID']} | Buyer: {row['Company']} | Size: {row['Size']} ({row['Qty Sold (KG)']} KG)":
                         row['Sales ID']
@@ -228,14 +234,12 @@ def inventory_search_management():
                                                     key="sales_id_picker_dropdown")
                 sale_id_to_edit = sales_options[selected_sales_label]
 
-                # Extract original parameters from historical row context
                 matched_sale = df_all_sales[df_all_sales['Sales ID'] == sale_id_to_edit].iloc[0]
                 orig_stock_id = int(matched_sale['stock_id'])
                 orig_qty_sold = float(matched_sale['Qty Sold (KG)'])
 
-                # Fetch live current weight balance remaining on the warehouse shelf
-                cursor_stock = conn_sales.cursor()
-                cursor_stock.execute("SELECT weight, status FROM stock WHERE id = ?", (orig_stock_id,))
+                cursor_stock = conn.cursor()
+                cursor_stock.execute("SELECT weight, status FROM stock WHERE id = %s", (orig_stock_id,))
                 stock_record = cursor_stock.fetchone()
 
                 if stock_record:
@@ -256,43 +260,86 @@ def inventory_search_management():
                             qty_diff = round(new_qty - orig_qty_sold, 2)
                             updated_warehouse_weight = round(warehouse_balance - qty_diff, 2)
 
-                            cursor_sales = conn_sales.cursor()
+                            cursor_sales = conn.cursor()
                             cursor_sales.execute("""
                                 UPDATE sales 
-                                SET company_name = ?, 
-                                    price_per_kg = ?, 
-                                    qty_sold = ?, 
-                                    total_amount = ? 
-                                WHERE id = ?
-                            """, (new_company, new_rate, new_qty, calculated_amount, sale_id_to_edit))
+                                SET company_name = %s, 
+                                    price_per_kg = %s, 
+                                    qty_sold = %s, 
+                                    total_amount = %s 
+                                WHERE id = %s
+                            """, (new_company, new_rate, new_qty, calculated_amount, int(sale_id_to_edit)))
 
                             if updated_warehouse_weight <= 0:
-                                cursor_sales.execute("UPDATE stock SET weight = 0, status = 'Sold' WHERE id = ?",
+                                cursor_sales.execute("UPDATE stock SET weight = 0, status = 'Sold' WHERE id = %s",
                                                      (orig_stock_id,))
                             else:
-                                cursor_sales.execute("UPDATE stock SET weight = ?, status = 'Available' WHERE id = ?",
+                                cursor_sales.execute("UPDATE stock SET weight = %s, status = 'Available' WHERE id = %s",
                                                      (updated_warehouse_weight, orig_stock_id))
 
-                            conn_sales.commit()
+                            conn.commit()
+                            cursor_sales.close()
                             st.success(f"Sales ID {sale_id_to_edit} updated successfully!")
                             st.rerun()
                 else:
                     st.error("The warehouse lot associated with this transaction row was permanently deleted.")
-        conn_sales.close()
 
-    # TAB 3: DELETE ONE SPECIFIC ENTRY
+    # TAB 3: CANCEL/DELETE SALES ENTRY
     with tab3:
+        st.write(
+            "Delete a sales entry completely. This will **automatically return the sold weight** back to the warehouse sheet entry.")
+        if not df_all_sales.empty:
+            sales_delete_options = {
+                f"Sales ID: {row['Sales ID']} | Buyer: {row['Company']} | Size: {row['Size']} | Returned: {row['Qty Sold (KG)']} KG":
+                    row['Sales ID'] for _, row in df_all_sales.iterrows()}
+            selected_del_label = st.selectbox("Select Sales Entry to Delete & Reverse",
+                                              [""] + list(sales_delete_options.keys()))
+
+            if selected_del_label:
+                sale_id_to_delete = sales_delete_options[selected_del_label]
+                matched_del_sale = df_all_sales[df_all_sales['Sales ID'] == sale_id_to_delete].iloc[0]
+                target_stock_id = int(matched_del_sale['stock_id'])
+                return_weight = float(matched_del_sale['Qty Sold (KG)'])
+
+                confirm_sales_wipe = st.checkbox(
+                    f"Confirm reversal: Delete Sales ID {sale_id_to_delete} and add back {return_weight} KG to Stock ID {target_stock_id}")
+
+                if st.button("Execute Sales Deletion", type="primary", disabled=not confirm_sales_wipe):
+                    cursor_wipe = conn.cursor()
+
+                    # A. Add the weight back to the original stock entry and mark it as Available
+                    cursor_wipe.execute("""
+                        UPDATE stock 
+                        SET weight = weight + %s, 
+                            status = 'Available' 
+                        WHERE id = %s
+                    """, (return_weight, target_stock_id))
+
+                    # B. Wipe out the sales transaction row from history logs
+                    cursor_wipe.execute("DELETE FROM sales WHERE id = %s", (int(sale_id_to_delete),))
+
+                    conn.commit()
+                    cursor_wipe.close()
+                    st.success(
+                        f"Transaction reversed! Added back {return_weight} KG to Stock batch ID {target_stock_id}.")
+                    st.rerun()
+        else:
+            st.info("No transaction records available to reverse.")
+
+    # TAB 4: DELETE ONE SPECIFIC ENTRY
+    with tab4:
         delete_id = st.number_input("Enter Item ID to Delete", min_value=1, step=1, key="del_id_input")
-        confirm_single = st.checkbox(f"I confirm I want to permanently delete Item ID {delete_id}")
+        confirm_single = st.checkbox("I confirm I want to permanently delete Item ID")
         if st.button("Delete Single Entry", type="primary", disabled=not confirm_single):
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM stock WHERE id = ?", (delete_id,))
+            cursor.execute("DELETE FROM stock WHERE id = %s", (int(delete_id),))
             conn.commit()
+            cursor.close()
             st.success(f"Successfully deleted Item ID {delete_id}!")
             st.rerun()
 
-    # TAB 4: REMOVE ALL ENTRIES FROM ONE RACK
-    with tab4:
+    # TAB 5: REMOVE ALL ENTRIES FROM ONE RACK
+    with tab5:
         selected_rack_to_clear = st.selectbox("Select Rack to Empty Completely",
                                               options=[""] + list(df['rack'].unique()))
         if selected_rack_to_clear:
@@ -302,38 +349,37 @@ def inventory_search_management():
             confirm_rack = st.checkbox(f"I confirm I want to wipe out all items from {selected_rack_to_clear}")
             if st.button(f"Wipe Rack {selected_rack_to_clear}", type="primary", disabled=not confirm_rack):
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM stock WHERE rack = ? AND status = 'Available'", (selected_rack_to_clear,))
+                cursor.execute("DELETE FROM stock WHERE rack = %s AND status = 'Available'", (selected_rack_to_clear,))
                 conn.commit()
+                cursor.close()
                 st.success(f"All stock records on Rack '{selected_rack_to_clear}' have been removed!")
                 st.rerun()
 
     # -------------------------------------------------------------
-    # NEW COMPONENT: HISTORICAL SALES PERFORMANCE LOG
+    # HISTORICAL SALES PERFORMANCE LOG
     # -------------------------------------------------------------
     st.markdown("---")
     st.subheader("📈 Sales Dispatch & Customer Tracking Analysis")
 
-    conn_sales = sqlite3.connect('inventory.db')
     try:
         sales_df = pd.read_sql("""
             SELECT 
-                sale_date AS [Date/Time],
-                company_name AS [Buyer Company],
-                invoice_no AS [Orig. Inv],
-                size AS [Size],
-                mica_type AS [Mica],
-                material AS [Material],
-                type AS [Type],
-                qty_sold AS [Qty Sold (KG)],
-                price_per_kg AS [Rate/KG],
-                total_amount AS [Total Value],
-                notes AS [Special Notes]
+                sale_date AS "Date/Time",
+                company_name AS "Buyer Company",
+                invoice_no AS "Orig. Inv",
+                size AS "Size",
+                mica_type AS "Mica",
+                material AS "Material",
+                "type" AS "Type",
+                qty_sold AS "Qty Sold (KG)",
+                price_per_kg AS "Rate/KG",
+                total_amount AS "Total Value",
+                notes AS "Special Notes"
             FROM sales 
             ORDER BY id DESC
-        """, conn_sales)
+        """, conn)
 
         if not sales_df.empty:
-            # High level monetization tracking metrics
             s_col1, s_col2 = st.columns(2)
             s_col1.metric("Gross Revenue Tracked", f"₹ {sales_df['Total Value'].sum():,.2f}")
             s_col2.metric("Total Weight Dispatched", f"{sales_df['Qty Sold (KG)'].sum():,.2f} KG")
@@ -342,7 +388,6 @@ def inventory_search_management():
         else:
             st.info("No transaction tracking history found for this business period.")
     except Exception as e:
-        st.info(
-            "Sales tracking system ready. Execute your first order transaction to compile the ledger data view.")
-    conn_sales.close()
+        st.info("Sales tracking system ready. Execute your first order transaction to compile the ledger data view.")
+
     conn.close()
