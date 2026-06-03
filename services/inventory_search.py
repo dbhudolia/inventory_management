@@ -22,7 +22,7 @@ def inventory_search_management():
     conn = get_db_connection()
 
     # -------------------------------------------------------------
-    # NEW FEATURE: GODOWN & RACK PACKET BREAKDOWN
+    # GODOWN & RACK PACKET BREAKDOWN
     # -------------------------------------------------------------
     st.subheader("📦 Rack-Wise Packet Breakdown")
     st.write("See a consolidated summary of items and packet counts for a specific location.")
@@ -40,7 +40,6 @@ def inventory_search_management():
     selected_r = b_col2.selectbox("Choose Rack for Breakdown", options=[""] + list(available_racks))
 
     if selected_g and selected_r:
-        # "type" is wrapped in double quotes for PostgreSQL compatibility
         breakdown_query = """
         SELECT 
             invoice_no AS "Invoice #", 
@@ -120,7 +119,7 @@ def inventory_search_management():
     st.subheader("🛠️ Inventory Management Panel")
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "✏️ Edit Stock Entry",
+        "✏️ Bulk Edit Stock",  # <-- Upgraded to handle multiple updates
         "💰 Edit Sales Records",
         "❌ Cancel/Delete Sales Entry",
         "🗑️ Delete Stock Entry",
@@ -133,68 +132,82 @@ def inventory_search_management():
         FROM sales ORDER BY id DESC
     """, conn)
 
-    # TAB 1: EDIT SINGLE ENTRY VALUES
+    # UPGRADED TAB 1: BULK SELECT AND EDIT STOCK ENTRIES AT ONCE
     with tab1:
-        st.write("Modify attributes or transfer locations using a record ID.")
-        edit_id = st.number_input("Enter Item ID to Edit", min_value=1, step=1, key="edit_id_input")
+        st.write(
+            "Select one or multiple Item IDs from the filtered search results above to apply changes across all of them at once.")
 
-        if edit_id in df['id'].values:
-            current_row = df[df['id'] == edit_id].iloc[0]
-            st.markdown(f"**Editing Record ID: {edit_id}** (Invoice: {current_row['invoice_no']})")
+        # Pull only the IDs present in the current filtered table view to keep choices clear
+        available_ids = sorted(list(df['id'].unique()))
+        selected_ids = st.multiselect("Select Item IDs to Edit in Bulk", options=available_ids,
+                                      placeholder="Choose one or multiple IDs")
 
-            with st.form("edit_values_form"):
+        if selected_ids:
+            st.warning(
+                f"⚠️ You have selected **{len(selected_ids)}** items to edit at the same time. Any values modified below will overwrite old records for all selected entries.")
+
+            # Pre-fill form fields using the first item selected in the list as a baseline reference template
+            reference_row = df[df['id'] == selected_ids[0]].iloc[0]
+
+            with st.form("bulk_edit_values_form"):
                 e_col1, e_col2 = st.columns(2)
                 with e_col1:
-                    new_size = st.text_input("Size", value=str(current_row['size']))
+                    new_size = st.text_input("Size", value=str(reference_row['size']),
+                                             help="Leave as is if you do not wish to change this value")
                     new_material = st.selectbox("Material", ["Rigid", "Flexible", "Epoxy"],
-                                                index=["Rigid", "Flexible", "Epoxy"].index(current_row['material']) if
-                                                current_row['material'] in ["Rigid", "Flexible", "Epoxy"] else 0)
+                                                index=["Rigid", "Flexible", "Epoxy"].index(reference_row['material']) if
+                                                reference_row['material'] in ["Rigid", "Flexible", "Epoxy"] else 0)
                     is_epoxy_edit = (new_material == "Epoxy")
                     new_finish = st.selectbox("Finish", ["Glass Cloth", "Steel", "Plain", "Polished", "N/A"],
                                               index=["Glass Cloth", "Steel", "Plain", "Polished", "N/A"].index(
-                                                  current_row['finish']) if current_row['finish'] in ["Glass Cloth",
-                                                                                                      "Steel", "Plain",
-                                                                                                      "Polished",
-                                                                                                      "N/A"] else 0,
+                                                  reference_row['finish']) if reference_row['finish'] in ["Glass Cloth",
+                                                                                                          "Steel",
+                                                                                                          "Plain",
+                                                                                                          "Polished",
+                                                                                                          "N/A"] else 0,
                                               disabled=is_epoxy_edit)
 
                 with e_col2:
                     new_mica = st.selectbox("Mica Type", ["Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"],
                                             index=["Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"].index(
-                                                current_row['mica_type']) if
-                                            current_row['mica_type'] in ["Muscovite", "Phlogopite", "Phlogopite(EV)",
-                                                                         "N/A"] else 0,
+                                                reference_row['mica_type']) if reference_row['mica_type'] in [
+                                                "Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"] else 0,
                                             disabled=is_epoxy_edit)
-                    new_type = st.selectbox("Stock Type", ["Fresh", "Seconds", "Cut", "Open"],
-                                            index=["Fresh", "Seconds", "Cut", "Open"].index(current_row['type']) if
-                                            current_row['type'] in ["Fresh", "Seconds", "Cut", "Open"] else 0)
-                    new_weight = st.number_input("Weight (KG)", min_value=0.0, step=0.1,
-                                                 value=float(current_row['weight']))
+                    new_type = st.selectbox("Stock Type", ["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage"],
+                                            index=["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage"].index(
+                                                reference_row['type']) if reference_row['type'] in ["Fresh", "Seconds",
+                                                                                                    "Cut", "Open",
+                                                                                                    "Joint",
+                                                                                                    "Damage"] else 0)
+                    new_weight = st.number_input("Weight per Packet (KG)", min_value=0.0, step=0.1,
+                                                 value=float(reference_row['weight']))
 
-                st.markdown("**Location Details (Use this to transfer items)**")
+                st.markdown("**Location Details (Use this to mass-transfer items across racks/godowns)**")
                 loc_col1, loc_col2 = st.columns(2)
                 new_godown = loc_col1.selectbox("Godown", ["Godown 1", "Godown 2"],
-                                                index=["Godown 1", "Godown 2"].index(current_row['godown']) if
-                                                current_row['godown'] in ["Godown 1", "Godown 2"] else 0)
-                new_rack = loc_col2.text_input("Rack / Row Location", value=str(current_row['rack']))
+                                                index=["Godown 1", "Godown 2"].index(reference_row['godown']) if
+                                                reference_row['godown'] in ["Godown 1", "Godown 2"] else 0)
+                new_rack = loc_col2.text_input("Rack / Row Location", value=str(reference_row['rack']))
 
-                if st.form_submit_button("Save Changes", type="primary"):
+                if st.form_submit_button("Apply Changes to All Selected Packets", type="primary"):
                     final_finish = "N/A" if is_epoxy_edit else new_finish
                     final_mica = "N/A" if is_epoxy_edit else new_mica
 
                     cursor_edit = conn.cursor()
-                    cursor_edit.execute("""
-                        UPDATE stock 
-                        SET size = %s, finish = %s, material = %s, "type" = %s, mica_type = %s, weight = %s, godown = %s, rack = %s 
-                        WHERE id = %s
-                    """, (new_size, final_finish, new_material, new_type, final_mica, new_weight, new_godown, new_rack,
-                          int(edit_id)))
+
+                    # Execute a looping query over every selected ID parameter inside a single database transaction
+                    for target_id in selected_ids:
+                        cursor_edit.execute("""
+                            UPDATE stock 
+                            SET size = %s, finish = %s, material = %s, "type" = %s, mica_type = %s, weight = %s, godown = %s, rack = %s 
+                            WHERE id = %s
+                        """, (new_size, final_finish, new_material, new_type, final_mica, new_weight, new_godown,
+                              new_rack, int(target_id)))
+
                     conn.commit()
                     cursor_edit.close()
-                    st.success(f"Item ID {edit_id} updated successfully!")
+                    st.success(f"🎉 Successfully updated parameters for all {len(selected_ids)} chosen stock items!")
                     st.rerun()
-        elif edit_id:
-            st.warning(f"ID {edit_id} is not found or not available.")
 
     # TAB 2: EDIT RECENT SALES ENTRIES
     with tab2:
@@ -306,8 +319,6 @@ def inventory_search_management():
 
                 if st.button("Execute Sales Deletion", type="primary", disabled=not confirm_sales_wipe):
                     cursor_wipe = conn.cursor()
-
-                    # A. Add the weight back to the original stock entry and mark it as Available
                     cursor_wipe.execute("""
                         UPDATE stock 
                         SET weight = weight + %s, 
@@ -315,9 +326,7 @@ def inventory_search_management():
                         WHERE id = %s
                     """, (return_weight, target_stock_id))
 
-                    # B. Wipe out the sales transaction row from history logs
                     cursor_wipe.execute("DELETE FROM sales WHERE id = %s", (int(sale_id_to_delete),))
-
                     conn.commit()
                     cursor_wipe.close()
                     st.success(
@@ -383,7 +392,6 @@ def inventory_search_management():
             s_col1, s_col2 = st.columns(2)
             s_col1.metric("Gross Revenue Tracked", f"₹ {sales_df['Total Value'].sum():,.2f}")
             s_col2.metric("Total Weight Dispatched", f"{sales_df['Qty Sold (KG)'].sum():,.2f} KG")
-
             st.dataframe(sales_df, use_container_width=True, hide_index=True)
         else:
             st.info("No transaction tracking history found for this business period.")
