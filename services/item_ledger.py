@@ -15,18 +15,15 @@ def get_db_connection():
 
 def item_ledger_management():
     st.title("📋 Product Variant Lifecycle Ledger")
-    st.info("Select specific product attributes or choose 'All' to trace incoming entries, sales logs, and current balances.")
+    st.info("Select specific product attributes or choose 'All' to trace aggregated inward entries, sales summaries, and current balances.")
 
     conn = get_db_connection()
-
-    # "type" is escaped with double quotes for PostgreSQL but alias keeps it lowercase for pandas
     setup_df = pd.read_sql('SELECT DISTINCT size, mica_type, finish, material, "type" AS type FROM stock', conn)
 
-    # --- SPECIFICATION SELECTOR BAR (WITH 'ALL' OPTIONS) ---
+    # --- SPECIFICATION SELECTOR BAR ---
     with st.container():
         st.subheader("🔍 Filter Product History")
         col1, col2, col3 = st.columns(3)
-
         selected_size = col1.selectbox("Size", options=["All"] + list(setup_df['size'].unique()))
         selected_mica = col2.selectbox("Mica Type", options=["All"] + list(setup_df['mica_type'].unique()))
         selected_finish = col3.selectbox("Finish", options=["All"] + list(setup_df['finish'].unique()))
@@ -37,7 +34,7 @@ def item_ledger_management():
 
     st.divider()
 
-    # --- BUILD THE DYNAMIC SQL WHERE CLAUSE BASED ON SELECTIONS ---
+    # --- DYNAMIC SQL CONFIGURATION ---
     where_clauses = []
     params = []
 
@@ -54,44 +51,44 @@ def item_ledger_management():
         where_clauses.append("material = %s")
         params.append(selected_material)
     if selected_type != "All":
-        where_clauses.append('"type" = %s')  # Double-quoted to protect keyword in PostgreSQL
+        where_clauses.append('"type" = %s')
         params.append(selected_type)
 
     where_string = " AND ".join(where_clauses) if where_clauses else "1=1"
 
-    # --- 1. FETCH ALL INWARD RECORDS (RAW ENTRIES) ---
+    # --- 1. COMPRESSED INWARD RECORDS (GROUPED BY INVOICE) ---
+    # CHANGED: Consolidated view casting timestamp to a pure DATE string
     inward_query = f"""
     SELECT 
-        id AS "Batch ID",
         invoice_no AS "Incoming Invoice #",
-        weight AS "Current Weight Left (KG)",
+        SUM(weight) AS "Total Weight Left (KG)",
         godown AS "Godown",
-        rack AS "Rack",
-        status AS "Current Status",
-        received_at AS "Received Date"
+        status AS "Status",
+        CAST(received_at AS DATE) AS "Received Date"
     FROM stock
     WHERE {where_string}
-    ORDER BY id DESC
+    GROUP BY invoice_no, godown, status, CAST(received_at AS DATE)
+    ORDER BY "Received Date" DESC
     """
     inward_df = pd.read_sql(inward_query, conn, params=params)
 
-    # --- 2. FETCH ALL OUTWARD RECORDS (SALES LOGS) ---
+    # --- 2. COMPRESSED OUTWARD RECORDS (GROUPED BY TRANSACTION BILLS) ---
+    # CHANGED: Consolidated sales reporting sum metrics with truncated dates
     sales_query = f"""
     SELECT 
-        id AS "Sales ID",
         company_name AS "Buyer Company",
-        qty_sold AS "Qty Sold (KG)",
+        SUM(qty_sold) AS "Total Quantity Sold (KG)",
         price_per_kg AS "Rate/KG",
-        total_amount AS "Total Revenue",
-        sale_date AS "Sale Date",
-        notes AS "Special Notes"
+        SUM(total_amount) AS "Total Revenue (₹)",
+        CAST(sale_date AS DATE) AS "Sales Date"
     FROM sales
     WHERE {where_string}
-    ORDER BY id DESC
+    GROUP BY company_name, price_per_kg, CAST(sale_date AS DATE)
+    ORDER BY "Sales Date" DESC
     """
     sales_df = pd.read_sql(sales_query, conn, params=params)
 
-    # --- 3. FIX WEIGHT MATHEMATICS METRICS ---
+    # --- 3. STOCK CALCULATIONS ---
     current_stock_query = f"""
     SELECT SUM(weight) FROM stock 
     WHERE {where_string} AND status = 'Available' AND weight > 0
@@ -102,22 +99,19 @@ def item_ledger_management():
     total_left = float(total_left) if total_left else 0.0
     cursor.close()
 
-    # Calculate total weight ever sold from the sales tracking table
-    total_sold_weight = sales_df['Qty Sold (KG)'].sum() if not sales_df.empty else 0.0
-
-    # Total Ever Received calculation
+    total_sold_weight = sales_df['Total Quantity Sold (KG)'].sum() if not sales_df.empty else 0.0
     total_inward_weight = total_left + total_sold_weight
 
-    # --- DISPLAY LEDGER INTERFACE ---
+    # --- DISPLAY METRICS ---
     m1, m2, m3 = st.columns(3)
-    m1.metric("Total Ever Received (Fixed)", f"{total_inward_weight:,.2f} KG")
+    m1.metric("Total Ever Received", f"{total_inward_weight:,.2f} KG")
     m2.metric("Total Quantities Sold", f"{total_sold_weight:,.2f} KG")
     m3.metric("NET PHYSICAL STOCK LEFT", f"{total_left:,.2f} KG", delta_color="inverse")
 
     st.divider()
 
-    # Table A: Inward Log
-    st.subheader("📥 Inward Entry History (Warehouse Batches)")
+    # Table A: Compressed Inward Log
+    st.subheader("📥 Aggregated Inward Entry Logs")
     if not inward_df.empty:
         st.dataframe(inward_df, use_container_width=True, hide_index=True)
     else:
@@ -125,19 +119,15 @@ def item_ledger_management():
 
     st.divider()
 
-    # Table B: Sales Log
-    st.subheader("📤 Outward Sales History (Customer Dispatches)")
+    # Table B: Compressed Sales Log
+    st.subheader("📤 Aggregated Outward Sales Logs")
     if not sales_df.empty:
         st.dataframe(sales_df, use_container_width=True, hide_index=True)
     else:
         st.info("No sales or customer dispatches recorded matching these filters.")
 
-    # --- THE CRITICAL SUMMARY BALANCE LINE ---
     st.divider()
-
-    filter_summary_text = "Selected Group" if "All" in [selected_size, selected_mica, selected_finish,
-                                                        selected_material,
-                                                        selected_type] else f"{selected_size} | {selected_mica} | {selected_finish} | {selected_material} | {selected_type}"
+    filter_summary_text = "Selected Group" if "All" in [selected_size, selected_mica, selected_finish, selected_material, selected_type] else f"{selected_size} | {selected_mica} | {selected_finish} | {selected_material} | {selected_type}"
 
     st.info(f"""
     ### 📦 Final Stock Position Balance

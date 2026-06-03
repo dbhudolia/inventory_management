@@ -3,6 +3,7 @@ import psycopg2
 import pandas as pd
 from datetime import datetime
 
+
 def get_db_connection():
     """Establishes a password-safe connection to Supabase using separate parameters."""
     conn = psycopg2.connect(
@@ -14,39 +15,37 @@ def get_db_connection():
     )
     return conn
 
+
 def inward_stock_management():
     st.title("📥 Material-Specific Stock Entry")
 
     # 1. INVOICE HEADER
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns([2, 2, 1.5])
     invoice_no = c1.text_input("Invoice Number")
     invoiced_item_name = c2.text_input("Item Name on Invoice (Nominal)")
+    # CHANGED: Manual inward date entry selector defaulting to today
+    manual_date = c3.date_input("Received Date", value=datetime.today())
 
     st.divider()
 
-    # 2. THE TRIGGER SECTION (Must be OUTSIDE the form to react instantly)
+    # 2. THE TRIGGER SECTION
     st.subheader("📏 Primary Specifications")
     col_size, col_mat = st.columns(2)
 
     size = col_size.text_input("Size", placeholder="e.g., 0.06 or 35mm")
     material = col_mat.selectbox("Material", ["Rigid", "Flexible", "Epoxy"])
 
-    # LOGIC: Instant conditional check for Epoxy
     is_epoxy = (material == "Epoxy")
 
-    # 3. PHYSICAL ENTRY FORM (The rest of the details)
+    # 3. PHYSICAL ENTRY FORM
     with st.form("physical_details_form"):
         st.subheader("🔍 Secondary Attributes")
 
         row2_col1, row2_col2, row2_col3 = st.columns(3)
         with row2_col1:
-            finish = st.selectbox("Finish",
-                                  ["Glass Cloth", "Steel", "Plain"],
-                                  disabled=is_epoxy)
+            finish = st.selectbox("Finish", ["Glass Cloth", "Steel", "Plain"], disabled=is_epoxy)
         with row2_col2:
-            mica_type = st.selectbox("Mica",
-                                     ["Muscovite", "Phlogopite", "Phlogopite(EV)"],
-                                     disabled=is_epoxy)
+            mica_type = st.selectbox("Mica", ["Muscovite", "Phlogopite", "Phlogopite(EV)"], disabled=is_epoxy)
         with row2_col3:
             item_type = st.selectbox("Type", ["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage"])
 
@@ -68,11 +67,12 @@ def inward_stock_management():
                 final_finish = "N/A" if is_epoxy else finish
                 final_mica = "N/A" if is_epoxy else mica_type
 
-                # --- DATABASE SAVING (CLOUD POSTGRESQL) ---
+                # Format custom entered calendar date into standard SQL timestamp string
+                final_date_str = manual_date.strftime("%Y-%m-%d 00:00:00")
+
                 conn = get_db_connection()
                 cursor = conn.cursor()
 
-                # Table creation check (Using SERIAL for cloud auto-increment)
                 cursor.execute('''CREATE TABLE IF NOT EXISTS stock (
                                     id SERIAL PRIMARY KEY,
                                     invoice_no TEXT,
@@ -88,19 +88,17 @@ def inward_stock_management():
                                     status TEXT,
                                     received_at TIMESTAMP)''')
 
-                # "type" is wrapped in double quotes for PostgreSQL, placeholders changed to %s
                 cursor.execute("""
                     INSERT INTO stock 
                     (invoice_no, invoiced_item_name, size, finish, "type", material, mica_type, weight, godown, rack, status, received_at) 
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (invoice_no, invoiced_item_name, size, final_finish, item_type, material, final_mica, weight,
-                      godown, rack, "Available", datetime.now()))
+                      godown, rack, "Available", final_date_str))
 
                 conn.commit()
                 cursor.close()
                 conn.close()
 
-                # Discrepancy Alert
                 if size not in invoiced_item_name:
                     st.warning(f"⚠️ DISCREPANCY: Measured {size} for invoiced {invoiced_item_name}.")
                 else:
@@ -111,11 +109,10 @@ def inward_stock_management():
     st.divider()
     try:
         conn = get_db_connection()
-        # "type" isn't fetched here, but query is fully safe
         history_df = pd.read_sql(
             "SELECT invoice_no, size, material, finish, weight FROM stock ORDER BY id DESC LIMIT 5", conn)
         st.write("Recent Entries:")
         st.dataframe(history_df, use_container_width=True, hide_index=True)
         conn.close()
-    except Exception as e:
+    except:
         pass

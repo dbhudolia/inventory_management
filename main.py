@@ -10,6 +10,7 @@ import services.helper as helper
 import services.out_order as out_order
 import services.stock_position as stock_position
 import services.item_ledger as item_ledger
+import services.stock_sorting as stock_sorting
 
 # --- MUST BE THE FIRST ST COMMAND ---
 st.set_page_config(
@@ -30,7 +31,7 @@ if 'logged_in' not in st.session_state:
 def main():
     st.sidebar.title("Warehouse Controls")
     # st.sidebar.title(f"Welcome, {st.session_state['username']}")
-    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Stock Position",
+    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Process Stock Sorting", "Stock Position",
                     "Inventory Search", "Item History Ledger"]
 
     # Only show User Management to Admins
@@ -57,7 +58,10 @@ def main():
     elif page == "Out Order (Sales)":
         out_order.out_order_management()
 
-    # --- PAGE 4: SEARCH & FILTERS ---
+    elif page == "Process Stock Sorting":
+        stock_sorting.stock_sorting_management()
+
+    # --- PAGE 5: SEARCH & FILTERS ---
     elif page == "Inventory Search":
         inventory_search.inventory_search_management()
 
