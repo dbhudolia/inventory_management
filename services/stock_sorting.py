@@ -23,7 +23,7 @@ def stock_sorting_management():
 
     # Fetch only entries marked as Unassorted Bulk that still have physical weight left
     query = """
-    SELECT id, invoice_no, size, material, mica_type, weight, godown, rack 
+    SELECT id, invoice_no, size, finish, material, mica_type, weight, godown, rack 
     FROM stock 
     WHERE status = 'Available' AND weight > 0 AND (sorting_status = 'Unassorted Bulk' OR "type" IN ('Seconds', 'Cut'))
     """
