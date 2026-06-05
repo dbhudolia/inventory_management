@@ -5,14 +5,13 @@ import pandas as pd
 
 def get_db_connection():
     """Establishes a password-safe connection to Supabase using separate parameters."""
-    conn = psycopg2.connect(
+    return psycopg2.connect(
         host=st.secrets["postgres"]["host"],
         database=st.secrets["postgres"]["database"],
         user=st.secrets["postgres"]["user"],
         password=st.secrets["postgres"]["password"],
         port=st.secrets["postgres"]["port"]
     )
-    return conn
 
 
 def inventory_search_management():
@@ -119,7 +118,7 @@ def inventory_search_management():
     st.subheader("🛠️ Inventory Management Panel")
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "✏️ Bulk Edit Stock",  # <-- Upgraded to handle multiple updates
+        "✏️ Bulk Edit Stock",
         "💰 Edit Sales Records",
         "❌ Cancel/Delete Sales Entry",
         "🗑️ Delete Stock Entry",
@@ -128,16 +127,15 @@ def inventory_search_management():
 
     df_all_sales = pd.read_sql("""
         SELECT id AS "Sales ID", sale_date AS "Date", company_name AS "Company", 
-               size AS "Size", qty_sold AS "Qty Sold (KG)", price_per_kg AS "Rate/KG", stock_id 
+               invoice_no AS "Invoice No", size AS "Size", qty_sold AS "Qty Sold (KG)", 
+               price_per_kg AS "Rate/KG", stock_id 
         FROM sales ORDER BY id DESC
     """, conn)
 
-    # UPGRADED TAB 1: BULK SELECT AND EDIT STOCK ENTRIES AT ONCE
+    # TAB 1: BULK SELECT AND EDIT STOCK ENTRIES
     with tab1:
         st.write(
             "Select one or multiple Item IDs from the filtered search results above to apply changes across all of them at once.")
-
-        # Pull only the IDs present in the current filtered table view to keep choices clear
         available_ids = sorted(list(df['id'].unique()))
         selected_ids = st.multiselect("Select Item IDs to Edit in Bulk", options=available_ids,
                                       placeholder="Choose one or multiple IDs")
@@ -145,15 +143,14 @@ def inventory_search_management():
         if selected_ids:
             st.warning(
                 f"⚠️ You have selected **{len(selected_ids)}** items to edit at the same time. Any values modified below will overwrite old records for all selected entries.")
-
-            # Pre-fill form fields using the first item selected in the list as a baseline reference template
             reference_row = df[df['id'] == selected_ids[0]].iloc[0]
 
             with st.form("bulk_edit_values_form"):
+                new_invoice = st.text_input("Invoice Number", value=str(reference_row['invoice_no']))
+
                 e_col1, e_col2 = st.columns(2)
                 with e_col1:
-                    new_size = st.text_input("Size", value=str(reference_row['size']),
-                                             help="Leave as is if you do not wish to change this value")
+                    new_size = st.text_input("Size", value=str(reference_row['size']))
                     new_material = st.selectbox("Material", ["Rigid", "Flexible", "Epoxy"],
                                                 index=["Rigid", "Flexible", "Epoxy"].index(reference_row['material']) if
                                                 reference_row['material'] in ["Rigid", "Flexible", "Epoxy"] else 0)
@@ -194,22 +191,20 @@ def inventory_search_management():
                     final_mica = "N/A" if is_epoxy_edit else new_mica
 
                     cursor_edit = conn.cursor()
-
-                    # Execute a looping query over every selected ID parameter inside a single database transaction
                     for target_id in selected_ids:
                         cursor_edit.execute("""
                             UPDATE stock 
-                            SET size = %s, finish = %s, material = %s, "type" = %s, mica_type = %s, weight = %s, godown = %s, rack = %s 
+                            SET invoice_no = %s, size = %s, finish = %s, material = %s, "type" = %s, mica_type = %s, weight = %s, godown = %s, rack = %s 
                             WHERE id = %s
-                        """, (new_size, final_finish, new_material, new_type, final_mica, new_weight, new_godown,
-                              new_rack, int(target_id)))
+                        """, (new_invoice, new_size, final_finish, new_material, new_type, final_mica, new_weight,
+                              new_godown, new_rack, int(target_id)))
 
                     conn.commit()
                     cursor_edit.close()
-                    st.success(f"🎉 Successfully updated parameters for all {len(selected_ids)} chosen stock items!")
+                    st.success(f"🎉 Bulk update complete!")
                     st.rerun()
 
-    # TAB 2: EDIT RECENT SALES ENTRIES
+    # TAB 2: EDIT RECENT SALES ENTRIES (WITH DROPDOWN FOR CLIENT NAMES)
     with tab2:
         if df_all_sales.empty:
             st.info("No transaction tracking history recorded to edit yet.")
@@ -260,7 +255,32 @@ def inventory_search_management():
                     max_allowable_qty = warehouse_balance + orig_qty_sold
 
                     with st.form("edit_sales_form"):
-                        new_company = st.text_input("Company Name", value=str(matched_sale['Company']))
+                        # UPGRADED: Pull full distinct client list for editing tab consistency
+                        cursor_edit_sales = conn.cursor()
+                        cursor_edit_sales.execute(
+                            "SELECT DISTINCT company_name FROM sales WHERE company_name IS NOT NULL AND company_name != '' ORDER BY company_name ASC")
+                        known_companies = [r[0] for r in cursor_edit_sales.fetchall()]
+                        cursor_edit_sales.close()
+
+                        current_buyer_name = str(matched_sale['Company'])
+                        if current_buyer_name not in known_companies:
+                            known_companies.append(current_buyer_name)
+
+                        edit_dropdown_opts = ["[+ Register New Company]"] + sorted(known_companies)
+
+                        selected_edit_comp_opt = st.selectbox(
+                            "Company Name",
+                            options=edit_dropdown_opts,
+                            index=edit_dropdown_opts.index(
+                                current_buyer_name) if current_buyer_name in edit_dropdown_opts else 0
+                        )
+
+                        if selected_edit_comp_opt == "[+ Register New Company]":
+                            new_company = st.text_input("Type New Company Name String", value="")
+                        else:
+                            new_company = selected_edit_comp_opt
+
+                        new_sales_invoice = st.text_input("Invoice Number", value=str(matched_sale['Invoice No']))
 
                         sc1, sc2 = st.columns(2)
                         new_rate = sc1.number_input("Price per KG (INR)", min_value=0.0, step=1.0,
@@ -277,11 +297,13 @@ def inventory_search_management():
                             cursor_sales.execute("""
                                 UPDATE sales 
                                 SET company_name = %s, 
+                                    invoice_no = %s,
                                     price_per_kg = %s, 
                                     qty_sold = %s, 
                                     total_amount = %s 
                                 WHERE id = %s
-                            """, (new_company, new_rate, new_qty, calculated_amount, int(sale_id_to_edit)))
+                            """, (new_company.strip(), new_sales_invoice, new_rate, new_qty, calculated_amount,
+                                  int(sale_id_to_edit)))
 
                             if updated_warehouse_weight <= 0:
                                 cursor_sales.execute("UPDATE stock SET weight = 0, status = 'Sold' WHERE id = %s",
@@ -329,8 +351,7 @@ def inventory_search_management():
                     cursor_wipe.execute("DELETE FROM sales WHERE id = %s", (int(sale_id_to_delete),))
                     conn.commit()
                     cursor_wipe.close()
-                    st.success(
-                        f"Transaction reversed! Added back {return_weight} KG to Stock batch ID {target_stock_id}.")
+                    st.success(f"Transaction reversed!")
                     st.rerun()
         else:
             st.info("No transaction records available to reverse.")
@@ -396,6 +417,6 @@ def inventory_search_management():
         else:
             st.info("No transaction tracking history found for this business period.")
     except Exception as e:
-        st.info("Sales tracking system ready. Execute your first order transaction to compile the ledger data view.")
+        st.info("Sales tracking system ready.")
 
     conn.close()

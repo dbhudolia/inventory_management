@@ -6,14 +6,13 @@ from datetime import datetime
 
 def get_db_connection():
     """Establishes a password-safe connection to Supabase using separate parameters."""
-    conn = psycopg2.connect(
+    return psycopg2.connect(
         host=st.secrets["postgres"]["host"],
         database=st.secrets["postgres"]["database"],
         user=st.secrets["postgres"]["user"],
         password=st.secrets["postgres"]["password"],
         port=st.secrets["postgres"]["port"]
     )
-    return conn
 
 
 def out_order_management():
@@ -56,7 +55,7 @@ def out_order_management():
         conn.close()
         return
 
-    # DYNAMIC FILTER BAR
+    # STEP 1: DYNAMIC FILTER BAR
     st.subheader("🛠️ Step 1: Filter Available Stock")
     with st.container(border=True):
         f_col1, f_col2, f_col3 = st.columns(3)
@@ -81,7 +80,7 @@ def out_order_management():
     st.dataframe(df_filtered, use_container_width=True, hide_index=True)
     st.divider()
 
-    # SALES DISPATCH ENTRY
+    # STEP 2: SALES DISPATCH ENTRY
     st.subheader("💼 Step 2: Process Dispatch")
     if df_filtered.empty:
         st.error("❌ No batches match your filters.")
@@ -101,10 +100,22 @@ def out_order_management():
         current_weight = float(matched_row['weight'])
 
     with col_cust:
-        company_name = st.text_input("Customer / Company Name")
+        # Pull historical buyers to construct dynamic lookups
+        cursor.execute(
+            "SELECT DISTINCT company_name FROM sales WHERE company_name IS NOT NULL AND company_name != '' ORDER BY company_name ASC")
+        known_companies = [row[0] for row in cursor.fetchall()]
+
+        # UPGRADED: Dropdown selector setup with fallback registry triggers
+        company_dropdown_options = ["[+ Register New Company]"] + known_companies
+        selected_company_option = st.selectbox("Select Customer / Company", options=company_dropdown_options,
+                                               index=0 if not known_companies else 1)
+
+        if selected_company_option == "[+ Register New Company]":
+            company_name = st.text_input("Type New Company Name String", value="")
+        else:
+            company_name = selected_company_option
 
     with col_date:
-        # CHANGED: Manual sales calendar override selection defaulting to today
         sales_manual_date = st.date_input("Sales Date", value=datetime.today())
 
     st.divider()
@@ -123,8 +134,8 @@ def out_order_management():
         st.warning("⚠️ Price is set to 0.0 (Pending Later Update)")
 
     if st.button("Confirm and Dispatch Order", type="primary", use_container_width=True):
-        if not company_name:
-            st.error("Company Name is required.")
+        if not company_name or company_name.strip() == "":
+            st.error("Company Name selection or input string is required.")
         else:
             new_weight = round(current_weight - sell_qty, 2)
             sales_date_str = sales_manual_date.strftime("%Y-%m-%d 00:00:00")
@@ -136,7 +147,7 @@ def out_order_management():
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (int(selected_id), matched_row['invoice_no'], matched_row['size'],
                   matched_row['finish'], matched_row['material'], matched_row['type'],
-                  matched_row['mica_type'], company_name, sell_qty, price_per_kg,
+                  matched_row['mica_type'], company_name.strip(), sell_qty, price_per_kg,
                   total_value, notes, sales_date_str))
 
             if new_weight <= 0:
@@ -149,3 +160,9 @@ def out_order_management():
             conn.close()
             st.success(f"Successfully processed dispatch of {sell_qty} KG!")
             st.rerun()
+
+    try:
+        cursor.close()
+        conn.close()
+    except:
+        pass
