@@ -64,7 +64,7 @@ def init_db():
     c.execute('SELECT COUNT(*) FROM users')
     if c.fetchone()[0] == 0:
         c.execute('INSERT INTO users (username, password, "role") VALUES (%s, %s, %s)',
-                  ('mpmica', 'mpmica@815301', 'Admin'))
+                  ('bhudolia', 'bhudolia@777', 'Admin'))
 
     conn.commit()
     c.close()
