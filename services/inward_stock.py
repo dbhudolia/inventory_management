@@ -47,7 +47,7 @@ def inward_stock_management():
         with row2_col2:
             mica_type = st.selectbox("Mica", ["Muscovite", "Phlogopite", "Phlogopite(EV)"], disabled=is_epoxy)
         with row2_col3:
-            item_type = st.selectbox("Type", ["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage"])
+            item_type = st.selectbox("Type", ["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage", "Seconds (Assorted)"])
 
         st.subheader("📍 Weight, Location & Multi-Log")
         row3_col1, row3_col2, row3_col3, row3_col4 = st.columns([1.5, 1.5, 1.5, 1.5])
