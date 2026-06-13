@@ -170,7 +170,7 @@ def inventory_search_management():
                                                 reference_row['mica_type']) if reference_row['mica_type'] in [
                                                 "Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"] else 0,
                                             disabled=is_epoxy_edit)
-                    new_type = st.selectbox("Stock Type", ["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage"],
+                    new_type = st.selectbox("Stock Type", ["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage", "Seconds (Assorted)"],
                                             index=["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage"].index(
                                                 reference_row['type']) if reference_row['type'] in ["Fresh", "Seconds",
                                                                                                     "Cut", "Open",
