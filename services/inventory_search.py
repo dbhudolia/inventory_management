@@ -1,6 +1,11 @@
 import streamlit as st
 import psycopg2
 import pandas as pd
+from datetime import datetime, date
+import warnings
+
+# Suppress the pandas DBAPI2 connection warning
+warnings.filterwarnings("ignore", category=UserWarning, module="pandas")
 
 
 def get_db_connection():
@@ -125,12 +130,17 @@ def inventory_search_management():
         "💥 Clear Entire Rack"
     ])
 
+    # UPGRADED: Added structural variant tags (size, finish, material, type, mica_type) to core sales retrieval string
     df_all_sales = pd.read_sql("""
-        SELECT id AS "Sales ID", sale_date AS "Date", company_name AS "Company", 
-               invoice_no AS "Invoice No", size AS "Size", qty_sold AS "Qty Sold (KG)", 
-               price_per_kg AS "Rate/KG", stock_id 
+        SELECT id AS "Sales ID", CAST(sale_date AS DATE) AS "Date", company_name AS "Company", 
+               invoice_no AS "Invoice No", size AS "Size", finish AS "Finish", 
+               material AS "Material", "type" AS "Type", mica_type AS "Mica Type",
+               qty_sold AS "Qty Sold (KG)", price_per_kg AS "Rate/KG", stock_id 
         FROM sales ORDER BY id DESC
     """, conn)
+
+    if not df_all_sales.empty:
+        df_all_sales['Date'] = pd.to_datetime(df_all_sales['Date']).dt.date
 
     # TAB 1: BULK SELECT AND EDIT STOCK ENTRIES
     with tab1:
@@ -165,17 +175,25 @@ def inventory_search_management():
                                               disabled=is_epoxy_edit)
 
                 with e_col2:
-                    new_mica = st.selectbox("Mica Type", ["Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"],
-                                            index=["Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"].index(
+                    new_mica = st.selectbox("Mica Type",
+                                            ["Muscovite", "Phlogopite", "Phlogopite(EV)", "White", "Washer", "N/A"],
+                                            index=["Muscovite", "Phlogopite", "Phlogopite(EV)", "White", "Washer",
+                                                   "N/A"].index(
                                                 reference_row['mica_type']) if reference_row['mica_type'] in [
-                                                "Muscovite", "Phlogopite", "Phlogopite(EV)", "N/A"] else 0,
+                                                "Muscovite", "Phlogopite", "Phlogopite(EV)", "White", "Washer",
+                                                "N/A"] else 0,
                                             disabled=is_epoxy_edit)
-                    new_type = st.selectbox("Stock Type", ["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage", "Seconds (Assorted)"],
-                                            index=["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage"].index(
+                    new_type = st.selectbox("Stock Type",
+                                            ["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage", "Seconds (Assorted)",
+                                             "Cut (Assorted)"],
+                                            index=["Fresh", "Seconds", "Cut", "Open", "Joint", "Damage",
+                                                   "Seconds (Assorted)", "Cut (Assorted)"].index(
                                                 reference_row['type']) if reference_row['type'] in ["Fresh", "Seconds",
                                                                                                     "Cut", "Open",
                                                                                                     "Joint",
-                                                                                                    "Damage"] else 0)
+                                                                                                    "Damage",
+                                                                                                    "Seconds (Assorted)",
+                                                                                                    "Cut (Assorted)"] else 0)
                     new_weight = st.number_input("Weight per Packet (KG)", min_value=0.0, step=0.1,
                                                  value=float(reference_row['weight']))
 
@@ -204,37 +222,76 @@ def inventory_search_management():
                     st.success(f"🎉 Bulk update complete!")
                     st.rerun()
 
-    # TAB 2: EDIT RECENT SALES ENTRIES (WITH DROPDOWN FOR CLIENT NAMES)
+    # TAB 2: EDIT RECENT SALES ENTRIES (UPGRADED FILTERS & TABLE EXTENSION)
     with tab2:
         if df_all_sales.empty:
             st.info("No transaction tracking history recorded to edit yet.")
         else:
             st.markdown("##### 🔍 Step 1: Filter Sales Logs")
-            sf1, sf2 = st.columns(2)
 
+            # Row 1 Filters: Company, Size & Date Range
+            sf1, sf2, sf3 = st.columns(3)
             comp_opts = ["All Companies"] + list(df_all_sales['Company'].unique())
             selected_sales_comp = sf1.selectbox("Filter Sales by Company", comp_opts, key="sales_filter_comp")
 
             size_opts = ["All Sizes"] + list(df_all_sales['Size'].unique())
             selected_sales_size = sf2.selectbox("Filter Sales by Sheet Size", size_opts, key="sales_filter_size")
 
+            sales_date_range = sf3.date_input("Select Sales Date Range",
+                                              value=(date(2026, 1, 1), datetime.today().date()), key="sales_date_range")
+
+            # Row 2 Filters: Material, Finish, Type & Mica Type
+            sf4, sf5, sf6, sf7 = st.columns(4)
+            mat_opts = ["All Materials"] + list(df_all_sales['Material'].dropna().unique())
+            selected_sales_mat = sf4.selectbox("Material", mat_opts, key="sales_filter_mat")
+
+            fin_opts = ["All Finishes"] + list(df_all_sales['Finish'].dropna().unique())
+            selected_sales_fin = sf5.selectbox("Finish", fin_opts, key="sales_filter_fin")
+
+            type_opts = ["All Types"] + list(df_all_sales['Type'].dropna().unique())
+            selected_sales_type = sf6.selectbox("Stock Type", type_opts, key="sales_filter_type")
+
+            mica_opts = ["All Mica"] + list(df_all_sales['Mica Type'].dropna().unique())
+            selected_sales_mica = sf7.selectbox("Mica Type", mica_opts, key="sales_filter_mica")
+
+            # Apply parameters cleanly to the copied sales dataframe
             df_filtered_sales = df_all_sales.copy()
+
             if selected_sales_comp != "All Companies":
                 df_filtered_sales = df_filtered_sales[df_filtered_sales['Company'] == selected_sales_comp]
             if selected_sales_size != "All Sizes":
                 df_filtered_sales = df_filtered_sales[df_filtered_sales['Size'] == selected_sales_size]
+            if selected_sales_mat != "All Materials":
+                df_filtered_sales = df_filtered_sales[df_filtered_sales['Material'] == selected_sales_mat]
+            if selected_sales_fin != "All Finishes":
+                df_filtered_sales = df_filtered_sales[df_filtered_sales['Finish'] == selected_sales_fin]
+            if selected_sales_type != "All Types":
+                df_filtered_sales = df_filtered_sales[df_filtered_sales['Type'] == selected_sales_type]
+            if selected_sales_mica != "All Mica":
+                df_filtered_sales = df_filtered_sales[df_filtered_sales['Mica Type'] == selected_sales_mica]
+
+            # Execute date range validation bounds checks
+            if isinstance(sales_date_range, tuple) and len(sales_date_range) == 2:
+                df_filtered_sales = df_filtered_sales[
+                    (df_filtered_sales['Date'] >= sales_date_range[0]) &
+                    (df_filtered_sales['Date'] <= sales_date_range[1])
+                    ]
 
             st.write(f"Matching Sales Entries Displayed: **{len(df_filtered_sales)}**")
-            st.dataframe(df_filtered_sales.drop(columns=['stock_id']), use_container_width=True, hide_index=True)
+
+            # Displays the layout showing all dynamic attribute modifications
+            display_columns = ['Sales ID', 'Date', 'Company', 'Invoice No', 'Size', 'Finish', 'Material', 'Type',
+                               'Mica Type', 'Qty Sold (KG)', 'Rate/KG']
+            st.dataframe(df_filtered_sales[display_columns], use_container_width=True, hide_index=True)
 
             st.divider()
             st.markdown("##### 💼 Step 2: Select Sales Record to Edit")
 
             if df_filtered_sales.empty:
-                st.warning("No sales logs match the company and size selected above.")
+                st.warning("No sales logs match the specifications and parameters selected above.")
             else:
                 sales_options = {
-                    f"Sales ID: {row['Sales ID']} | Buyer: {row['Company']} | Size: {row['Size']} ({row['Qty Sold (KG)']} KG)":
+                    f"ID: {row['Sales ID']} | Buyer: {row['Company']} | Size: {row['Size']} | Type: {row['Type']} ({row['Qty Sold (KG)']} KG)":
                         row['Sales ID']
                     for _, row in df_filtered_sales.iterrows()
                 }
@@ -255,7 +312,6 @@ def inventory_search_management():
                     max_allowable_qty = warehouse_balance + orig_qty_sold
 
                     with st.form("edit_sales_form"):
-                        # UPGRADED: Pull full distinct client list for editing tab consistency
                         cursor_edit_sales = conn.cursor()
                         cursor_edit_sales.execute(
                             "SELECT DISTINCT company_name FROM sales WHERE company_name IS NOT NULL AND company_name != '' ORDER BY company_name ASC")

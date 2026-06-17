@@ -21,27 +21,79 @@ def get_db_connection():
 def stock_sorting_management():
     st.title("✂️ Seconds & Cut Sorting Hub")
     st.info(
-        "Process unassorted mixed lots. Deduct weight from bulk boxes and split them into precisely measured variations—accounting for processing weight loss or gain.")
+        "Process unassorted mixed lots. Filter down bulk boxes, deduct weight, and split them into precisely measured variations.")
 
     conn = get_db_connection()
 
-    # Fetch only entries marked as Unassorted Bulk that still have physical weight left
-    query = """
-    SELECT id, invoice_no, size, finish, material, mica_type, weight, godown, rack 
-    FROM stock 
-    WHERE status = 'Available' AND weight > 0 AND (sorting_status = 'Unassorted Bulk' OR "type" IN ('Seconds', 'Cut'))
+    # -----------------------------------------------------------------
+    # DYNAMIC SEARCH FILTERS
+    # -----------------------------------------------------------------
+    st.subheader("🔍 Filter Available Unassorted Stock")
+
+    # Fetch structural categories to populate dynamic filter selections
+    filter_setup_df = pd.read_sql("""
+        SELECT DISTINCT size, finish, material, mica_type 
+        FROM stock 
+        WHERE status = 'Available' AND weight > 0
+    """, conn)
+
+    f1, f2, f3 = st.columns(3)
+    f_size = f1.selectbox("Filter by Size", options=["All"] + list(filter_setup_df['size'].dropna().unique()))
+    f_mica = f2.selectbox("Filter by Mica Type", options=["All"] + list(filter_setup_df['mica_type'].dropna().unique()))
+    f_finish = f3.selectbox("Filter by Finish", options=["All"] + list(filter_setup_df['finish'].dropna().unique()))
+
+    f4, f5 = st.columns(2)
+    f_material = f4.selectbox("Filter by Material",
+                              options=["All"] + list(filter_setup_df['material'].dropna().unique()))
+    # Explicitly lets you choose between raw unassorted groups or viewing everything altogether
+    f_type = f5.selectbox("Filter by Stock Category Group",
+                          options=["Seconds & Cut Only", "Seconds Only", "Cut Only", "All Bulk Active"])
+
+    # Construct the query based on selected filter attributes
+    where_clauses = ["status = 'Available'", "weight > 0"]
+    params = []
+
+    if f_size != "All":
+        where_clauses.append("size = %s")
+        params.append(f_size)
+    if f_mica != "All":
+        where_clauses.append("mica_type = %s")
+        params.append(f_mica)
+    if f_finish != "All":
+        where_clauses.append("finish = %s")
+        params.append(f_finish)
+    if f_material != "All":
+        where_clauses.append("material = %s")
+        params.append(f_material)
+
+    # Apply category group conditions
+    if f_type == "Seconds & Cut Only":
+        where_clauses.append(
+            "(\"type\" LIKE '%%Seconds%%' OR \"type\" LIKE '%%Cut%%' OR sorting_status = 'Unassorted Bulk')")
+    elif f_type == "Seconds Only":
+        where_clauses.append("(\"type\" LIKE '%%Seconds%%')")
+    elif f_type == "Cut Only":
+        where_clauses.append("(\"type\" LIKE '%%Cut%%')")
+
+    final_query = f"""
+        SELECT id, invoice_no, size, finish, material, mica_type, "type", weight, godown, rack 
+        FROM stock 
+        WHERE {" AND ".join(where_clauses)}
+        ORDER BY id DESC
     """
-    df_bulk = pd.read_sql(query, conn)
+
+    df_bulk = pd.read_sql(final_query, conn, params=params)
+    st.divider()
 
     if df_bulk.empty:
-        st.success("🎉 All mixed lots are currently sorted! No bulk seconds/cut items require assortment.")
+        st.warning("⚠️ No active unassorted matching lots found with the selected filter criteria.")
         conn.close()
         return
 
     # --- STEP 1: SELECT THE BULK PARENT BATCH ---
     st.subheader("📦 Step 1: Select Mixed Parent Batch")
     bulk_options = {
-        f"ID: {row['id']} | Size: {row['size']} | Available Book Weight: {row['weight']} KG (Inv: {row['invoice_no']})":
+        f"ID: {row['id']} | [{row['type']}] | Size: {row['size']} | Weight: {row['weight']} KG (Inv: {row['invoice_no']})":
             row['id']
         for _, row in df_bulk.iterrows()
     }
@@ -57,7 +109,6 @@ def stock_sorting_management():
     st.subheader("⚖️ Step 2: Book Weight Deducted")
     col_w, col_d = st.columns(2)
 
-    # This is the weight being subtracted from the parent row's ledger balance
     book_weight_to_deduct = col_w.number_input(
         "Book Weight to Deduct from Parent row (KG)",
         min_value=0.1,
@@ -82,7 +133,8 @@ def stock_sorting_management():
         cc1, cc2, cc3, cc4 = st.columns([2, 1.5, 1.5, 1])
 
         c_size = cc1.text_input(f"Size Details #{i + 1}", placeholder="e.g., 0.45*1000*600", key=f"c_size_{i}")
-        c_type = cc2.selectbox("Type", ["Fresh", "Seconds (Assorted)", "Cut (Assorted)", "Damage / Scrap"],
+        # Added 'Washer' to the option pool matching your target fabrication categories
+        c_type = cc2.selectbox("Type", ["Seconds (Assorted)", "Cut (Assorted)", "Fresh", "Damage"],
                                key=f"c_type_{i}")
         c_weight = cc3.number_input("Actual Scaled Weight (KG)", min_value=0.0, step=0.1, key=f"c_weight_{i}")
         c_rack = cc4.text_input("Rack Location", value=str(parent_row['rack']), key=f"c_rack_{i}")

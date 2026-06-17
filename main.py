@@ -11,6 +11,7 @@ import services.out_order as out_order
 import services.stock_position as stock_position
 import services.item_ledger as item_ledger
 import services.stock_sorting as stock_sorting
+from services.sales_analysis import sales_analysis_management
 
 # --- MUST BE THE FIRST ST COMMAND ---
 st.set_page_config(
@@ -36,6 +37,7 @@ def main():
 
     # Only show User Management to Admins
     if st.session_state['user_role'] == 'Admin':
+        menu_options.append("Executive Sales Analysis")
         menu_options.append("Manage Users")
 
     page = st.sidebar.radio("Navigation", menu_options)
@@ -70,6 +72,9 @@ def main():
 
     elif page == "Item History Ledger":
         item_ledger.item_ledger_management()
+
+    elif page == "Executive Sales Analysis":
+        sales_analysis_management()
 
     # --- NEW PAGE: MANAGE USERS ---
     elif page == "Manage Users":
