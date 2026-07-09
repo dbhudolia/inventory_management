@@ -12,6 +12,7 @@ import services.stock_position as stock_position
 import services.item_ledger as item_ledger
 import services.stock_sorting as stock_sorting
 from services.sales_analysis import sales_analysis_management
+import services.bulk_sales as bulk_sales
 
 # --- MUST BE THE FIRST ST COMMAND ---
 st.set_page_config(
@@ -32,7 +33,7 @@ if 'logged_in' not in st.session_state:
 def main():
     st.sidebar.title("Warehouse Controls")
     # st.sidebar.title(f"Welcome, {st.session_state['username']}")
-    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Process Stock Sorting", "Stock Position",
+    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Bulk Variant Sales", "Process Stock Sorting", "Stock Position",
                     "Inventory Search", "Item History Ledger"]
 
     # Only show User Management to Admins
@@ -59,6 +60,9 @@ def main():
     # --- NEW PAGE: OUT ORDER ---
     elif page == "Out Order (Sales)":
         out_order.out_order_management()
+
+    elif page == "Bulk Variant Sales":
+        bulk_sales.rack_liquidation_management()
 
     elif page == "Process Stock Sorting":
         stock_sorting.stock_sorting_management()
