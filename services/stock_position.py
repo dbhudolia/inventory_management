@@ -5,14 +5,13 @@ import pandas as pd
 
 def get_db_connection():
     """Establishes a password-safe connection to Supabase using separate parameters."""
-    conn = psycopg2.connect(
+    return psycopg2.connect(
         host=st.secrets["postgres"]["host"],
         database=st.secrets["postgres"]["database"],
         user=st.secrets["postgres"]["user"],
         password=st.secrets["postgres"]["password"],
         port=st.secrets["postgres"]["port"]
     )
-    return conn
 
 
 def stock_position_summary():
@@ -39,7 +38,7 @@ def stock_position_summary():
         text_search = st.text_input("Search by Invoice # or Rack name")
 
         st.divider()
-        # --- NEW: THICKNESS SIZE FILTER CONTROLS ---
+        # --- THICKNESS SIZE FILTER CONTROLS ---
         st.markdown("##### 📏 Filter by Sheet Thickness (Value before the first '*')")
         t_col1, t_col2 = st.columns(2)
         min_thick = t_col1.number_input("Minimum Thickness (mm)", min_value=0.0, value=0.0, step=0.1,
@@ -94,24 +93,19 @@ def stock_position_summary():
     if finish_filter:
         df_position = df_position[df_position['Finish'].isin(finish_filter)]
 
-    # --- NEW: APPLY THICKNESS FILTERING LOGIC ---
+    # --- APPLY THICKNESS FILTERING LOGIC ---
     def extract_thickness(size_str):
         try:
-            # Splits string at the first '*' and grabs the first element
             if size_str and '*' in str(size_str):
                 return float(str(size_str).split('*')[0].strip())
             return float(size_str)
         except ValueError:
-            return 0.0  # Return 0 if the format is a plain string instead of numbers
+            return 0.0
 
-    # Apply extractor to the Size column to run data range evaluations
     df_position['extracted_thickness'] = df_position['Size'].apply(extract_thickness)
 
-    # Filter for minimum thickness boundary
     if min_thick > 0.0:
         df_position = df_position[df_position['extracted_thickness'] >= min_thick]
-
-    # Filter for maximum thickness boundary (if specified)
     if max_thick > 0.0:
         df_position = df_position[df_position['extracted_thickness'] <= max_thick]
 
@@ -123,10 +117,60 @@ def stock_position_summary():
             df_position['Rack Distribution'].str.contains(text_search, case=False, regex=False)
             ]
 
-    # --- DISPLAY CONSOLIDATED POSITION ---
+    # -----------------------------------------------------------------
+    # TABLE 1: DETAILED BREAKDOWN VIEW BY EXACT SIZE
+    # -----------------------------------------------------------------
     st.divider()
-    st.subheader(f"Summary View: {len(df_position)} Unique Attribute Groups")
+    st.subheader(f"📏 Table 1: Detailed Size View ({len(df_position)} Attributes Matched)")
 
-    # Drop the temporary extracted column before presenting the clean UI table to users
     final_display_df = df_position.drop(columns=['extracted_thickness'])
     st.dataframe(final_display_df, use_container_width=True, hide_index=True)
+
+    # -----------------------------------------------------------------
+    # TABLE 2: CONSOLIDATED BREAKDOWN BY THICKNESS (MM)
+    # -----------------------------------------------------------------
+    st.divider()
+    st.subheader("🔬 Table 2: Thickness Summary View (MM)")
+    st.write("Consolidated physical mass tracking grouping your remaining stock by thickness gauge numbers.")
+
+    if not df_position.empty:
+        df_thick_summary = df_position.copy()
+        df_thick_summary['Thickness (MM)'] = df_thick_summary['extracted_thickness'].astype(str)
+
+        # FIX: Parse and clean raw rack token mappings to prevent duplicate counts
+        def parse_and_reaggregate_racks(series_item):
+            all_tokens = []
+            for raw_string in series_item.dropna().astype(str):
+                # Split entries sharing individual invoice commas
+                for piece in raw_string.split(','):
+                    if piece.strip():
+                        all_tokens.append(piece.strip())
+
+            # Group identical rack names together to sum up total packets safely
+            rack_map = {}
+            for token in all_tokens:
+                if '(' in token and ')' in token:
+                    r_name = token.split('(')[0].strip()
+                    try:
+                        p_count = int(token.split('(')[1].split(' ')[0])
+                    except (ValueError, IndexError):
+                        p_count = 1
+                    rack_map[r_name] = rack_map.get(r_name, 0) + p_count
+                else:
+                    rack_map[token] = rack_map.get(token, 0) + 1
+
+            return ', '.join([f"{k} ({v} packets)" for k, v in sorted(rack_map.items())])
+
+        # Group records by thickness while using standard addition summaries for totals
+        thickness_grouped = df_thick_summary.groupby(
+            ['Thickness (MM)', 'Finish', 'Material', 'Type', 'Mica Type'], dropna=False
+        ).agg({
+            'Total Packets': 'sum',  # <-- Adds packet integers accurately
+            'Total Weight (KG)': 'sum',  # <-- Adds mass weights accurately
+            'Rack Distribution': parse_and_reaggregate_racks
+        }).reset_index()
+
+        thickness_grouped = thickness_grouped.sort_values(by="Total Weight (KG)", ascending=False)
+        st.dataframe(thickness_grouped, use_container_width=True, hide_index=True)
+    else:
+        st.info("No active data entries found to run thickness sums over.")
