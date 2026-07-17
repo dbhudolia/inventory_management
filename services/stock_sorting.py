@@ -1,7 +1,7 @@
 import streamlit as st
 import psycopg2
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import warnings
 
 # Suppress the pandas DBAPI2 connection warning
@@ -9,6 +9,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="pandas")
 
 
 def get_db_connection():
+    """Establishes a password-safe connection to Supabase using separate parameters."""
     return psycopg2.connect(
         host=st.secrets["postgres"]["host"],
         database=st.secrets["postgres"]["database"],
@@ -21,41 +22,65 @@ def get_db_connection():
 def stock_sorting_management():
     st.title("✂️ Seconds & Cut Sorting Hub")
     st.info(
-        "Process unassorted mixed lots. Filter down bulk boxes, deduct weight, and split them into precisely measured variations.")
+        "Process unassorted mixed lots. Filter down bulk boxes by thickness or rack, deduct material weights, and split them into precisely measured variations.")
 
     conn = get_db_connection()
 
-    # -----------------------------------------------------------------
-    # DYNAMIC SEARCH FILTERS
-    # -----------------------------------------------------------------
-    st.subheader("🔍 Filter Available Unassorted Stock")
+    # Helper function to extract leading gauge digits before the first asterisk
+    def extract_thickness(size_str):
+        if size_str and '*' in str(size_str):
+            return str(size_str).split('*')[0].strip()
+        return str(size_str).strip() if size_str else "Unknown"
 
-    # Fetch structural categories to populate dynamic filter selections
+    # --- FETCH STRUCTURAL CATEGORY ATTRIBUTES ---
     filter_setup_df = pd.read_sql("""
-        SELECT DISTINCT size, finish, material, mica_type 
+        SELECT DISTINCT size, finish, material, mica_type, rack 
         FROM stock 
         WHERE status = 'Available' AND weight > 0
     """, conn)
 
-    f1, f2, f3 = st.columns(3)
-    f_size = f1.selectbox("Filter by Size", options=["All"] + list(filter_setup_df['size'].dropna().unique()))
-    f_mica = f2.selectbox("Filter by Mica Type", options=["All"] + list(filter_setup_df['mica_type'].dropna().unique()))
-    f_finish = f3.selectbox("Filter by Finish", options=["All"] + list(filter_setup_df['finish'].dropna().unique()))
+    # Compute valid thickness values present on shelves
+    filter_setup_df['thickness_mm'] = filter_setup_df['size'].apply(extract_thickness)
+    unique_thicknesses = sorted(list(filter_setup_df['thickness_mm'].unique()))
 
-    f4, f5 = st.columns(2)
-    f_material = f4.selectbox("Filter by Material",
-                              options=["All"] + list(filter_setup_df['material'].dropna().unique()))
-    # Explicitly lets you choose between raw unassorted groups or viewing everything altogether
-    f_type = f5.selectbox("Filter by Stock Category Group",
+    # -----------------------------------------------------------------
+    # STEP 1: DYNAMIC STRUCTURAL FILTER DECK
+    # -----------------------------------------------------------------
+    st.subheader("🔍 Filter Available Unassorted Stock")
+
+    f_col1, f_col2, f_col3 = st.columns(3)
+    f_thick = f_col1.selectbox("Filter by Thickness (MM)", options=["All"] + unique_thicknesses)
+
+    # Dynamically scope size list choices based on selected thickness coordinate
+    if f_thick != "All":
+        filtered_sizes = filter_setup_df[filter_setup_df['thickness_mm'] == f_thick]['size'].unique()
+    else:
+        filtered_sizes = filter_setup_df['size'].unique()
+
+    f_size = f_col2.selectbox("Filter by Size (Exact Dimensions)", options=["All"] + sorted(list(filtered_sizes)))
+    f_rack = f_col3.selectbox("Filter by Specific Rack Location",
+                              options=["All"] + sorted(list(filter_setup_df['rack'].dropna().unique())))
+
+    f_col4, f_col5, f_col6 = st.columns(3)
+    f_mica = f_col4.selectbox("Filter by Mica Type",
+                              options=["All"] + list(filter_setup_df['mica_type'].dropna().unique()))
+    f_finish = f_col5.selectbox("Filter by Finish", options=["All"] + list(filter_setup_df['finish'].dropna().unique()))
+    f_material = f_col6.selectbox("Filter by Material",
+                                  options=["All"] + list(filter_setup_df['material'].dropna().unique()))
+
+    f_type = st.selectbox("Filter by Stock Category Group",
                           options=["Seconds & Cut Only", "Seconds Only", "Cut Only", "All Bulk Active"])
 
-    # Construct the query based on selected filter attributes
+    # --- BUILD DATA QUERY ---
     where_clauses = ["status = 'Available'", "weight > 0"]
     params = []
 
     if f_size != "All":
         where_clauses.append("size = %s")
         params.append(f_size)
+    if f_rack != "All":
+        where_clauses.append("rack = %s")
+        params.append(f_rack)
     if f_mica != "All":
         where_clauses.append("mica_type = %s")
         params.append(f_mica)
@@ -66,7 +91,6 @@ def stock_sorting_management():
         where_clauses.append("material = %s")
         params.append(f_material)
 
-    # Apply category group conditions
     if f_type == "Seconds & Cut Only":
         where_clauses.append(
             "(\"type\" LIKE '%%Seconds%%' OR \"type\" LIKE '%%Cut%%' OR sorting_status = 'Unassorted Bulk')")
@@ -83,6 +107,12 @@ def stock_sorting_management():
     """
 
     df_bulk = pd.read_sql(final_query, conn, params=params)
+
+    # Extra layer: In-memory thickness filter if exact dimensions are kept open
+    if f_thick != "All" and f_size == "All" and not df_bulk.empty:
+        df_bulk['tmp_thick'] = df_bulk['size'].apply(extract_thickness)
+        df_bulk = df_bulk[df_bulk['tmp_thick'] == f_thick].drop(columns=['tmp_thick'])
+
     st.divider()
 
     if df_bulk.empty:
@@ -90,54 +120,73 @@ def stock_sorting_management():
         conn.close()
         return
 
-    # --- STEP 1: SELECT THE BULK PARENT BATCH ---
-    st.subheader("📦 Step 1: Select Mixed Parent Batch")
+    # --- STEP 2: SELECT PARENT SUBSET (UPGRADED TO MULTI-SELECT) ---
+    st.subheader("📦 Step 2: Select Mixed Parent Batch Rows")
+
     bulk_options = {
-        f"ID: {row['id']} | [{row['type']}] | Size: {row['size']} | Weight: {row['weight']} KG (Inv: {row['invoice_no']})":
+        f"ID: {row['id']} | [{row['type']}] | Size: {row['size']} | Loc: {row['godown']}-{row['rack']} | Weight: {row['weight']} KG (Inv: {row['invoice_no']})":
             row['id']
         for _, row in df_bulk.iterrows()
     }
-    selected_label = st.selectbox("Choose Mixed Batch to Process", list(bulk_options.keys()))
-    parent_id = bulk_options[selected_label]
 
-    parent_row = df_bulk[df_bulk['id'] == parent_id].iloc[0]
-    max_book_weight = float(parent_row['weight'])
+    selected_labels = st.multiselect("Choose One or More Mixed Batches to Process", list(bulk_options.keys()),
+                                     placeholder="Select raw batches to sort out")
+    selected_parent_ids = [bulk_options[lbl] for lbl in selected_labels]
+
+    if not selected_parent_ids:
+        st.info("Highlight target parent lots from the multiselect menu above to open the processing canvas.")
+        conn.close()
+        return
+
+    # Isolate parent entries picked by user
+    df_selected_parents = df_bulk[df_bulk['id'].isin(selected_parent_ids)]
+    total_available_parent_weight = round(df_selected_parents['weight'].sum(), 2)
+    is_single_choice = len(selected_parent_ids) == 1
 
     st.divider()
 
-    # --- STEP 2: DEFINE THE BOOK VALUE BEING REMOVED ---
-    st.subheader("⚖️ Step 2: Book Weight Deducted")
+    # --- STEP 3: DEFINE BOOK VALUE BEING REMOVED ---
+    st.subheader("⚖️ Step 3: Book Weight Allocation")
     col_w, col_d = st.columns(2)
 
-    book_weight_to_deduct = col_w.number_input(
-        "Book Weight to Deduct from Parent row (KG)",
-        min_value=0.1,
-        max_value=max_book_weight,
-        step=0.1,
-        value=max_book_weight,
-        help="How much weight should be removed from this parent record's balance? (Usually the full packet weight)"
-    )
+    if is_single_choice:
+        # Context Mode A: Single line selected -> Allow variable weight inputs
+        book_weight_to_deduct = col_w.number_input(
+            "Book Weight to Deduct from Parent Row (KG)",
+            min_value=0.1,
+            max_value=total_available_parent_weight,
+            step=0.1,
+            value=total_available_parent_weight,
+            help="Specify exactly how much mass to draw out from this individual entry record"
+        )
+    else:
+        # Context Mode B: Multiple rows checked -> Hard lock total weights to prevent fractions
+        book_weight_to_deduct = total_available_parent_weight
+        col_w.number_input("Book Weight to Deduct (Locked on All Selected)", value=book_weight_to_deduct, disabled=True)
+
     sorting_date = col_d.date_input("Processing Date", value=datetime.today())
 
     st.divider()
 
-    # --- STEP 3: INPUT THE ACTUAL SORTED BREAKDOWN OUTCOMES ---
-    st.subheader("📏 Step 3: Actual Physical Breakdown Outputs")
-    st.write("Specify the exact physical weights and dimensions actually found upon opening the packet.")
+    # --- STEP 4: OUTPUT VARIANT BREAKDOWN COMPOSITION ---
+    st.subheader("📏 Step 4: Actual Physical Breakdown Outputs")
+    st.write("Specify the exact physical weights and dimensions found after completing the sorting operation.")
 
-    num_variants = st.number_input("How many different sizes did you find inside?", min_value=1, max_value=6, value=2)
+    num_variants = st.number_input("How many different sizes/categories were made out of it?", min_value=1,
+                                   max_value=10, value=2)
 
     child_entries = []
+    # Base fallback references taken from the primary parent row context
+    primary_parent = df_selected_parents.iloc[0]
+
     for i in range(int(num_variants)):
         st.markdown(f"**Actual Extracted Variant #{i + 1}**")
         cc1, cc2, cc3, cc4 = st.columns([2, 1.5, 1.5, 1])
 
         c_size = cc1.text_input(f"Size Details #{i + 1}", placeholder="e.g., 0.45*1000*600", key=f"c_size_{i}")
-        # Added 'Washer' to the option pool matching your target fabrication categories
-        c_type = cc2.selectbox("Type", ["Seconds (Assorted)", "Cut (Assorted)", "Fresh", "Damage"],
-                               key=f"c_type_{i}")
+        c_type = cc2.selectbox("Type", ["Seconds (Assorted)", "Cut (Assorted)", "Fresh", "Damage"], key=f"c_type_{i}")
         c_weight = cc3.number_input("Actual Scaled Weight (KG)", min_value=0.0, step=0.1, key=f"c_weight_{i}")
-        c_rack = cc4.text_input("Rack Location", value=str(parent_row['rack']), key=f"c_rack_{i}")
+        c_rack = cc4.text_input("Rack Location", value=str(primary_parent['rack']), key=f"c_rack_{i}")
 
         if c_size and c_weight > 0:
             child_entries.append({
@@ -148,11 +197,10 @@ def stock_sorting_management():
             })
         st.markdown("---")
 
-    # Calculate total actual physical weight entered by user
+    # Math balance calculation algorithms
     actual_physical_sum = sum(item['weight'] for item in child_entries)
     weight_variance = round(actual_physical_sum - book_weight_to_deduct, 2)
 
-    # Display dynamic balancing metrics on screen
     m_col1, m_col2 = st.columns(2)
     m_col1.metric("Total Actual Physical Weight Found", f"{actual_physical_sum:.2f} KG")
 
@@ -165,26 +213,32 @@ def stock_sorting_management():
     else:
         m_col2.metric("Weight Balance Status", "Perfect Balance (0.00 KG Change)")
 
-    # --- STEP 4: EXECUTE SAFE DISCREPANCY TRANSACTION ---
+    # --- STEP 5: ATOMIC TRANSACTION CLEARANCE ROUTE ---
     if st.button("Commit Sorting Separation Loop", type="primary", use_container_width=True):
         if actual_physical_sum <= 0:
             st.error("❌ You must log at least one sorted child entry with a weight greater than 0 KG.")
         else:
             try:
                 cursor = conn.cursor()
-
-                # A. Deduct the book value from the parent row
-                new_parent_weight = round(max_book_weight - book_weight_to_deduct, 2)
-
-                if new_parent_weight <= 0:
-                    cursor.execute("UPDATE stock SET weight = 0, status = 'Sorted Out' WHERE id = %s",
-                                   (int(parent_id),))
-                else:
-                    cursor.execute("UPDATE stock SET weight = %s WHERE id = %s", (new_parent_weight, int(parent_id)))
-
-                # B. Insert the actual physical child rows found
                 formatted_date_str = sorting_date.strftime("%Y-%m-%d 00:00:00")
 
+                # A. Handle parent database adjustments based on choice execution scopes
+                if is_single_choice:
+                    p_id = int(selected_parent_ids[0])
+                    old_w = float(primary_parent['weight'])
+                    new_parent_w = round(old_w - book_weight_to_deduct, 2)
+
+                    if new_parent_w <= 0:
+                        cursor.execute("UPDATE stock SET weight = 0, status = 'Sorted Out' WHERE id = %s", (p_id,))
+                    else:
+                        cursor.execute("UPDATE stock SET weight = %s WHERE id = %s", (new_parent_w, p_id))
+                else:
+                    # Clear out all parent balances completely
+                    for p_id in selected_parent_ids:
+                        cursor.execute("UPDATE stock SET weight = 0, status = 'Sorted Out' WHERE id = %s", (int(p_id),))
+
+                # B. Insert the newborn sorted child rows
+                parent_tracking_label = ", ".join(map(str, selected_parent_ids))
                 for child in child_entries:
                     cursor.execute("""
                         INSERT INTO stock (
@@ -192,29 +246,29 @@ def stock_sorting_management():
                             material, mica_type, weight, godown, rack, status, received_at, parent_id, sorting_status
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Assorted')
                     """, (
-                        parent_row['invoice_no'],
-                        f"Sorted from Lot {parent_id}",
+                        primary_parent['invoice_no'],
+                        f"Sorted from Lots [{parent_tracking_label}]",
                         child['size'],
-                        parent_row['finish'],
+                        primary_parent['finish'],
                         child['type'],
-                        parent_row['material'],
-                        parent_row['mica_type'],
+                        primary_parent['material'],
+                        primary_parent['mica_type'],
                         child['weight'],
-                        parent_row['godown'],
+                        primary_parent['godown'],
                         child['rack'],
                         'Available',
                         formatted_date_str,
-                        int(parent_id)
+                        int(selected_parent_ids[0])  # Links tracking ancestry to the first active parent item
                     ))
 
                 conn.commit()
                 cursor.close()
                 st.success(
-                    f"🎉 Processed! Removed {book_weight_to_deduct} KG book value from Parent Box. Registered {actual_physical_sum} KG of precise sorted variants.")
+                    f"🎉 Allocation Successful! Cleaned {book_weight_to_deduct} KG from raw inventories and registered {actual_physical_sum} KG of precision child variants.")
                 st.rerun()
 
             except Exception as e:
                 conn.rollback()
-                st.error(f"Database error during transaction processing: {e}")
+                st.error(f"Critical Database rollback during transactional routing: {e}")
 
     conn.close()

@@ -25,19 +25,54 @@ def item_ledger_management():
         "Select product attributes and a date range to calculate opening balances, periodic transfers, and current warehouse positions.")
 
     conn = get_db_connection()
+
+    # Load all distinct baseline parameters into memory first to manage interactive cross-filtering
     setup_df = pd.read_sql('SELECT DISTINCT size, mica_type, finish, material, "type" AS type FROM stock', conn)
 
-    # --- SPECIFICATION SELECTOR BAR ---
-    with st.container():
-        st.subheader("🔍 Filter Product History")
-        col1, col2, col3 = st.columns(3)
-        selected_size = col1.selectbox("Size", options=["All"] + list(setup_df['size'].unique()))
-        selected_mica = col2.selectbox("Mica Type", options=["All"] + list(setup_df['mica_type'].unique()))
-        selected_finish = col3.selectbox("Finish", options=["All"] + list(setup_df['finish'].unique()))
+    # Helper function to extract the thickness parameter cleanly
+    def extract_thickness(size_str):
+        if size_str and '*' in str(size_str):
+            return str(size_str).split('*')[0].strip()
+        return str(size_str).strip() if size_str else "Unknown"
 
-        col4, col5 = st.columns(2)
-        selected_material = col4.selectbox("Material", options=["All"] + list(setup_df['material'].unique()))
-        selected_type = col5.selectbox("Stock Type", options=["All"] + list(setup_df['type'].unique()))
+    setup_df['thickness_mm'] = setup_df['size'].apply(extract_thickness)
+    unique_thicknesses = sorted(list(setup_df['thickness_mm'].unique()))
+
+    # --- SPECIFICATION SELECTOR BAR ---
+    st.subheader("🔍 Filter Product History")
+    with st.container(border=True):
+        col1, col2, col3 = st.columns(3)
+        selected_thickness = col1.selectbox("Thickness (MM)", options=["All"] + unique_thicknesses,
+                                            help="Filter strictly by the gauge number before the '*' symbol")
+        selected_mica = col2.selectbox("Mica Type",
+                                       options=["All"] + sorted(list(setup_df['mica_type'].dropna().unique())))
+        selected_finish = col3.selectbox("Finish", options=["All"] + sorted(list(setup_df['finish'].dropna().unique())))
+
+        col4, col5, col6 = st.columns(3)
+        selected_material = col4.selectbox("Material",
+                                           options=["All"] + sorted(list(setup_df['material'].dropna().unique())))
+        selected_type = col6.selectbox("Stock Type", options=["All"] + sorted(list(setup_df['type'].dropna().unique())))
+
+        # -----------------------------------------------------------------
+        # COMPUTE INTERACTIVE SIZE OPTIONS BASELINE
+        # -----------------------------------------------------------------
+        # Filter the dynamic setup pool based on ALL selections to build the valid size checklist
+        dynamic_size_pool = setup_df.copy()
+
+        if selected_thickness != "All":
+            dynamic_size_pool = dynamic_size_pool[dynamic_size_pool['thickness_mm'] == selected_thickness]
+        if selected_mica != "All":
+            dynamic_size_pool = dynamic_size_pool[dynamic_size_pool['mica_type'] == selected_mica]
+        if selected_finish != "All":
+            dynamic_size_pool = dynamic_size_pool[dynamic_size_pool['finish'] == selected_finish]
+        if selected_material != "All":
+            dynamic_size_pool = dynamic_size_pool[dynamic_size_pool['material'] == selected_material]
+        if selected_type != "All":
+            dynamic_size_pool = dynamic_size_pool[dynamic_size_pool['type'] == selected_type]
+
+        # Populate the size select box based on remaining matches
+        available_sizes = sorted(list(dynamic_size_pool['size'].dropna().unique()))
+        selected_size = col5.selectbox("Size (Exact Dimensions)", options=["All"] + available_sizes)
 
         st.divider()
         # --- PERIOD CALENDAR FILTER CONTROLS ---
@@ -48,7 +83,7 @@ def item_ledger_management():
 
     st.divider()
 
-    # --- DYNAMIC SQL WHERE CLAUSES ---
+    # --- FETCH BASELINE HISTORICAL DATASETS ---
     stock_clauses = []
     sales_clauses = []
     base_params = []
@@ -80,15 +115,30 @@ def item_ledger_management():
     start_date_str = start_date.strftime("%Y-%m-%d 00:00:00")
     end_date_str = end_date.strftime("%Y-%m-%d 23:59:59")
 
-    # Fetch full history datasets for the selected configuration variant
     df_all_stock = pd.read_sql(
-        f'SELECT id, invoice_no, weight, godown, status, received_at FROM stock WHERE {stock_where_str}', conn,
+        f'SELECT id, invoice_no, size, weight, godown, status, received_at FROM stock WHERE {stock_where_str}', conn,
         params=base_params)
     df_all_sales = pd.read_sql(
-        f'SELECT id, stock_id, invoice_no, company_name, qty_sold, price_per_kg, total_amount, sale_date FROM sales WHERE {sales_where_str}',
+        f'SELECT id, stock_id, invoice_no, size, company_name, qty_sold, price_per_kg, total_amount, sale_date FROM sales WHERE {sales_where_str}',
         conn, params=base_params)
     conn.close()
 
+    # Apply in-memory thickness fallback sorting values if size remains broad
+    if not df_all_stock.empty:
+        df_all_stock['extracted_thickness'] = df_all_stock['size'].apply(extract_thickness)
+        if selected_thickness != "All":
+            df_all_stock = df_all_stock[df_all_stock['extracted_thickness'] == selected_thickness]
+
+    if not df_all_sales.empty:
+        df_all_sales['extracted_thickness'] = df_all_sales['size'].apply(extract_thickness)
+        if selected_thickness != "All":
+            df_all_sales = df_all_sales[df_all_sales['extracted_thickness'] == selected_thickness]
+
+    if df_all_stock.empty and df_all_sales.empty:
+        st.warning("No historical stock ledger log lines found matching this current filter configuration.")
+        return
+
+    # Convert timestamp values safely
     if not df_all_stock.empty:
         df_all_stock['received_at'] = pd.to_datetime(df_all_stock['received_at'])
     if not df_all_sales.empty:
@@ -97,31 +147,19 @@ def item_ledger_management():
     t_start = pd.to_datetime(start_date_str)
     t_end = pd.to_datetime(end_date_str)
 
-    # -----------------------------------------------------------------
-    # YOUR BLUEPRINT LOGIC STEP-BY-STEP
-    # -----------------------------------------------------------------
-
     # 1. INITIAL VALUE (OPENING BALANCE)
     initial_at_value = 0.0
     df_prior_stock = df_all_stock[df_all_stock['received_at'] < t_start] if not df_all_stock.empty else pd.DataFrame()
 
     if not df_prior_stock.empty:
         for _, batch in df_prior_stock.iterrows():
-            # Get all sales ever made against this specific packet id
             batch_sales = df_all_sales[
                 df_all_sales['stock_id'] == batch['id']] if not df_all_sales.empty else pd.DataFrame()
-
-            # Sum up sales that happened BEFORE our opening start date window
             sales_before_start = batch_sales[batch_sales['sale_date'] < t_start][
                 'qty_sold'].sum() if not batch_sales.empty else 0.0
-            sales_after_start = batch_sales[batch_sales['sale_date'] >= t_start][
-                'qty_sold'].sum() if not batch_sales.empty else 0.0
 
-            # The baseline starting packet weight before sales took place
             original_packet_weight = batch['weight'] + batch_sales['qty_sold'].sum() if not batch_sales.empty else \
             batch['weight']
-
-            # Opening weight = Original weight brought in minus what was sold before the start date
             batch_opening_weight = original_packet_weight - sales_before_start
             initial_at_value += max(0.0, batch_opening_weight)
 
@@ -132,12 +170,9 @@ def item_ledger_management():
 
     if not df_period_stock.empty:
         for _, batch in df_period_stock.iterrows():
-            # Look up if any sales ever happened against this batch at any point in time
             batch_sales = df_all_sales[
                 df_all_sales['stock_id'] == batch['id']] if not df_all_sales.empty else pd.DataFrame()
             total_sales_ever = batch_sales['qty_sold'].sum() if not batch_sales.empty else 0.0
-
-            # Original entry weight = current ledger row value + all tracked dispatches
             total_received_in_period += (batch['weight'] + total_sales_ever)
 
     # 3. TOTAL SOLD (IN PERIOD)
@@ -159,10 +194,6 @@ def item_ledger_management():
 
     st.divider()
 
-    # -----------------------------------------------------------------
-    # COMPILING HISTORICAL DATA TABLES
-    # -----------------------------------------------------------------
-
     # TABLE A: INWARD HISTORY DISPLAY
     st.subheader(f"📥 Periodic Inward Entries ({start_date.strftime('%d-%b-%Y')} to {end_date.strftime('%d-%b-%Y')})")
     if not df_period_stock.empty:
@@ -171,11 +202,9 @@ def item_ledger_management():
 
         for (inv_no, gdn, stat, r_date), group in df_period_stock.groupby(
                 ['invoice_no', 'godown', 'status', 'Received Date']):
-            # Current remaining live weight inside the window selection group
             current_bal_left = group[group['status'] == 'Available']['weight'].sum()
-
-            # Sum of original entry weights within this invoice grouping
             group_received_total = 0.0
+
             for _, row in group.iterrows():
                 batch_sales = df_all_sales[
                     df_all_sales['stock_id'] == row['id']] if not df_all_sales.empty else pd.DataFrame()

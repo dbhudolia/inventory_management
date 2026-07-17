@@ -16,8 +16,8 @@ def get_db_connection():
 
 
 def out_order_management():
-    st.title("📤 Outward Order (Sales & Dispatch)")
-    st.info("Filter your inventory step-by-step to quickly locate and select the exact batch being sold.")
+    st.title("📤 Outward Order (Flexible Batch Dispatch)")
+    st.info("Filter stock, select item batches, and process single or multiple orders dynamically.")
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -92,20 +92,18 @@ def out_order_management():
 
     with col_select:
         item_options = {
-            f"ID: {row['id']} | Inv: {row['invoice_no']} | Loc: {row['godown']}-{row['rack']} ({row['weight']} KG left)":
-                row['id'] for _, row in df_filtered.iterrows()}
-        selected_label = st.selectbox("Select Target Batch to Dispatch", list(item_options.keys()))
-        selected_id = item_options[selected_label]
-        matched_row = df_raw[df_raw['id'] == selected_id].iloc[0]
-        current_weight = float(matched_row['weight'])
+            f"ID: {row['id']} | Inv: {row['invoice_no']} | Size: {row['size']} | Loc: {row['godown']}-{row['rack']} ({row['weight']} KG)":
+                row['id'] for _, row in df_filtered.iterrows()
+        }
+        selected_labels = st.multiselect("Select Target Batches to Dispatch", list(item_options.keys()),
+                                         placeholder="Choose one or more batches")
+        selected_ids = [item_options[lbl] for lbl in selected_labels]
 
     with col_cust:
-        # Pull historical buyers to construct dynamic lookups
         cursor.execute(
             "SELECT DISTINCT company_name FROM sales WHERE company_name IS NOT NULL AND company_name != '' ORDER BY company_name ASC")
         known_companies = [row[0] for row in cursor.fetchall()]
 
-        # UPGRADED: Dropdown selector setup with fallback registry triggers
         company_dropdown_options = ["[+ Register New Company]"] + known_companies
         selected_company_option = st.selectbox("Select Customer / Company", options=company_dropdown_options,
                                                index=0 if not known_companies else 1)
@@ -118,48 +116,111 @@ def out_order_management():
     with col_date:
         sales_manual_date = st.date_input("Sales Date", value=datetime.today())
 
+    if not selected_ids:
+        st.info("Please select at least one target batch item from the dropdown menu to proceed.")
+        cursor.close()
+        conn.close()
+        return
+
+    # Isolate selected rows
+    df_checkout_pool = df_raw[df_raw['id'].isin(selected_ids)]
+
+    # Check if a single batch or multiple batches are highlighted
+    is_single_batch = len(selected_ids) == 1
+
     st.divider()
-    col_q, col_p, col_n = st.columns([1, 1, 2])
-    with col_q:
-        sell_qty = st.number_input("Weight to Sell (KG)", min_value=0.1, max_value=current_weight, step=0.1)
-    with col_p:
-        price_per_kg = st.number_input("Price per KG", min_value=0.0, step=5.0, value=0.0)
-    with col_n:
-        notes = st.text_input("Transaction Notes")
+
+    # Set up entry parameters based on context rules
+    if is_single_batch:
+        col_q, col_p, col_n = st.columns([1, 1, 2])
+        matched_single_row = df_checkout_pool.iloc[0]
+        max_available_weight = float(matched_single_row['weight'])
+
+        with col_q:
+            # DYNAMIC INPUT: Shown ONLY when exactly one row is checked
+            sell_qty = st.number_input("Weight to Sell (KG)", min_value=0.1, max_value=max_available_weight,
+                                       value=max_available_weight, step=0.1)
+        with col_p:
+            price_per_kg = st.number_input("Price per KG", min_value=0.0, step=5.0, value=0.0)
+        with col_n:
+            notes = st.text_input("Transaction Notes")
+    else:
+        col_p, col_n = st.columns([1, 3])
+        # AUTOMATIC LOCKIN: Takes the total sum because multiple items are checked
+        sell_qty = round(df_checkout_pool['weight'].sum(), 2)
+
+        with col_p:
+            price_per_kg = st.number_input("Price per KG", min_value=0.0, step=5.0, value=0.0)
+        with col_n:
+            notes = st.text_input("Transaction Notes", placeholder="e.g., Combined package contract clearance.")
 
     total_value = round(sell_qty * price_per_kg, 2)
+
+    # Metric Summary Layout Cards
+    m_col1, m_col2 = st.columns(2)
+    m_col1.metric("Total Weight Selling (KG)", f"{sell_qty:,.2f} KG",
+                  delta=f"{len(selected_ids)} total batches selected")
+
     if price_per_kg > 0:
-        st.write(f"### Total Deal Value: ₹ {total_value:,.2f}")
+        m_col2.metric("Total Deal Value", f"₹ {total_value:,.2f}")
     else:
         st.warning("⚠️ Price is set to 0.0 (Pending Later Update)")
 
-    if st.button("Confirm and Dispatch Order", type="primary", use_container_width=True):
+    if st.button("Confirm and Dispatch Selected Batches", type="primary", use_container_width=True):
         if not company_name or company_name.strip() == "":
             st.error("Company Name selection or input string is required.")
         else:
-            new_weight = round(current_weight - sell_qty, 2)
-            sales_date_str = sales_manual_date.strftime("%Y-%m-%d 00:00:00")
+            try:
+                sales_date_str = sales_manual_date.strftime("%Y-%m-%d 00:00:00")
 
-            cursor.execute("""
-                INSERT INTO sales (
-                    stock_id, invoice_no, size, finish, material, "type", mica_type, 
-                    company_name, qty_sold, price_per_kg, total_amount, notes, sale_date
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (int(selected_id), matched_row['invoice_no'], matched_row['size'],
-                  matched_row['finish'], matched_row['material'], matched_row['type'],
-                  matched_row['mica_type'], company_name.strip(), sell_qty, price_per_kg,
-                  total_value, notes, sales_date_str))
+                if is_single_batch:
+                    # Single execution branch with variable quantity tracking
+                    row = df_checkout_pool.iloc[0]
+                    p_id = int(row['id'])
+                    current_item_weight = float(row['weight'])
+                    new_remaining_weight = round(current_item_weight - sell_qty, 2)
 
-            if new_weight <= 0:
-                cursor.execute("UPDATE stock SET weight = 0, status = 'Sold' WHERE id = %s", (int(selected_id),))
-            else:
-                cursor.execute("UPDATE stock SET weight = %s WHERE id = %s", (new_weight, int(selected_id)))
+                    cursor.execute("""
+                        INSERT INTO sales (
+                            stock_id, invoice_no, size, finish, material, "type", mica_type, 
+                            company_name, qty_sold, price_per_kg, total_amount, notes, sale_date
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (p_id, row['invoice_no'], row['size'], row['finish'], row['material'],
+                          row['type'], row['mica_type'], company_name.strip(), sell_qty, price_per_kg,
+                          total_value, notes, sales_date_str))
 
-            conn.commit()
-            cursor.close()
-            conn.close()
-            st.success(f"Successfully processed dispatch of {sell_qty} KG!")
-            st.rerun()
+                    if new_remaining_weight <= 0:
+                        cursor.execute("UPDATE stock SET weight = 0, status = 'Sold' WHERE id = %s", (p_id,))
+                    else:
+                        cursor.execute("UPDATE stock SET weight = %s WHERE id = %s", (new_remaining_weight, p_id))
+                else:
+                    # Multi-batch loop clearing full package totals
+                    for _, row in df_checkout_pool.iterrows():
+                        p_id = int(row['id'])
+                        p_weight = float(row['weight'])
+                        packet_amount = round(p_weight * price_per_kg, 2)
+
+                        cursor.execute("""
+                            INSERT INTO sales (
+                                stock_id, invoice_no, size, finish, material, "type", mica_type, 
+                                company_name, qty_sold, price_per_kg, total_amount, notes, sale_date
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (p_id, row['invoice_no'], row['size'], row['finish'], row['material'],
+                              row['type'], row['mica_type'], company_name.strip(), p_weight, price_per_kg,
+                              packet_amount, notes, sales_date_str))
+
+                        cursor.execute("UPDATE stock SET weight = 0, status = 'Sold' WHERE id = %s", (p_id,))
+
+                conn.commit()
+                st.success(f"Successfully processed dispatch of {sell_qty} total KG across {len(selected_ids)} items!")
+
+                cursor.close()
+                conn.close()
+                st.rerun()
+
+            except Exception as ex:
+                conn.rollback()
+                st.error(f"Critical transaction rollback triggered by database engine: {ex}")
 
     try:
         cursor.close()
