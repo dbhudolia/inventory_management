@@ -1,7 +1,5 @@
 import streamlit as st
 import sqlite3
-import urllib.request
-import json
 
 import services.inventory as inventory
 import services.inward_stock as inward_stock
@@ -11,6 +9,8 @@ import services.out_order as out_order
 import services.stock_position as stock_position
 import services.item_ledger as item_ledger
 import services.stock_sorting as stock_sorting
+import services.sales_price_editor as sales_price_editor
+import services.bulk_rack_transfer as bulk_rack_transfer
 from services.sales_analysis import sales_analysis_management
 import services.bulk_sales as bulk_sales
 
@@ -33,13 +33,21 @@ if 'logged_in' not in st.session_state:
 def main():
     st.sidebar.title("Warehouse Controls")
     # st.sidebar.title(f"Welcome, {st.session_state['username']}")
-    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Bulk Variant Sales", "Process Stock Sorting", "Stock Position",
-                    "Inventory Search", "Item History Ledger"]
+    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Process Stock Sorting", "Stock Position",
+                    "Inventory Search"]
 
     # Only show User Management to Admins
     if st.session_state['user_role'] == 'Admin':
         menu_options.append("Executive Sales Analysis")
         menu_options.append("Manage Users")
+
+    # Only show User Management to Admins
+    if st.session_state['user_role'] == 'Developer':
+        menu_options.append("Bulk Variant Sales")
+        menu_options.append("Sales Price Editor")
+        menu_options.append("Item History Ledger")
+        menu_options.append("Bulk Rack Transfer")
+        menu_options.append("Executive Sales Analysis")
 
     page = st.sidebar.radio("Navigation", menu_options)
 
@@ -83,6 +91,14 @@ def main():
     # --- NEW PAGE: MANAGE USERS ---
     elif page == "Manage Users":
         helper.manage_user()
+
+    # --- NEW PAGE: Sales ---
+    elif page == "Sales Price Editor":
+        sales_price_editor.sales_price_editor_management()
+
+    # --- NEW PAGE: Rack Transfer ---
+    elif page == "Bulk Rack Transfer":
+        bulk_rack_transfer.bulk_rack_transfer_management()
     conn.close()
 
 # --- ROUTER ---

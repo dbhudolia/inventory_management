@@ -135,7 +135,7 @@ def manage_user():
     with st.expander("Add New Staff User Account", expanded=True):
         new_user = st.text_input("New Username").strip()
         new_pw = st.text_input("New Password", type="password").strip()
-        new_role = st.selectbox("Assign System Clearance Level", ["Staff", "Admin"])
+        new_role = st.selectbox("Assign System Clearance Level", ["Staff", "Admin", "Developer"])
 
         if st.button("Create User Account & Save to Cloud", type="primary", use_container_width=True):
             if not new_user or not new_pw:
@@ -162,7 +162,7 @@ def manage_user():
                     conn.rollback()
                     st.error(f"Engine routing exception encountered: {e}")
 
-    st.subheader("Current Registered Directory Records")
+    '''st.subheader("Current Registered Directory Records")
     try:
         # Pull safe tracking overview without exposing sensitive hash values onto screen interfaces
         users_df = pd.read_sql(
@@ -172,4 +172,4 @@ def manage_user():
     except Exception as read_err:
         st.error(f"Failed to compile operational user list: {read_err}")
     finally:
-        conn.close()
+        conn.close()'''
