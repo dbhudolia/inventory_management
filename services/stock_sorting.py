@@ -22,7 +22,8 @@ def get_db_connection():
 def stock_sorting_management():
     st.title("✂️ Seconds & Cut Sorting Hub")
     st.info(
-        "Process unassorted mixed lots. Filter down bulk boxes by thickness or rack, deduct material weights, and split them into precisely measured variations.")
+        "Process unassorted mixed lots. Filter down bulk boxes by thickness or rack, deduct material weights, and split them into precisely measured variations."
+    )
 
     conn = get_db_connection()
 
@@ -120,7 +121,7 @@ def stock_sorting_management():
         conn.close()
         return
 
-    # --- STEP 2: SELECT PARENT SUBSET (UPGRADED TO MULTI-SELECT) ---
+    # --- STEP 2: SELECT PARENT SUBSET (MULTI-SELECT) ---
     st.subheader("📦 Step 2: Select Mixed Parent Batch Rows")
 
     bulk_options = {
@@ -170,35 +171,42 @@ def stock_sorting_management():
 
     # --- STEP 4: OUTPUT VARIANT BREAKDOWN COMPOSITION ---
     st.subheader("📏 Step 4: Actual Physical Breakdown Outputs")
-    st.write("Specify the exact physical weights and dimensions found after completing the sorting operation.")
+    st.write("Specify the size, category, packet count, and unit weight found after sorting.")
 
     num_variants = st.number_input("How many different sizes/categories were made out of it?", min_value=1,
                                    max_value=10, value=2)
 
     child_entries = []
-    # Base fallback references taken from the primary parent row context
     primary_parent = df_selected_parents.iloc[0]
 
     for i in range(int(num_variants)):
         st.markdown(f"**Actual Extracted Variant #{i + 1}**")
-        cc1, cc2, cc3, cc4 = st.columns([2, 1.5, 1.5, 1])
+        cc1, cc2, cc3, cc4, cc5, cc6 = st.columns([2, 1.5, 1, 1.2, 1.2, 1])
 
         c_size = cc1.text_input(f"Size Details #{i + 1}", placeholder="e.g., 0.45*1000*600", key=f"c_size_{i}")
         c_type = cc2.selectbox("Type", ["Seconds (Assorted)", "Cut (Assorted)", "Fresh", "Damage"], key=f"c_type_{i}")
-        c_weight = cc3.number_input("Actual Scaled Weight (KG)", min_value=0.0, step=0.1, key=f"c_weight_{i}")
-        c_rack = cc4.text_input("Rack Location", value=str(primary_parent['rack']), key=f"c_rack_{i}")
+        c_packets = cc3.number_input("Packets", min_value=1, step=1, value=1, key=f"c_packets_{i}")
+        c_unit_weight = cc4.number_input("KG / Packet", min_value=0.0, step=0.1, key=f"c_unit_weight_{i}")
 
-        if c_size and c_weight > 0:
+        # Calculate subtotal weight for this variant line
+        line_total_weight = round(c_packets * c_unit_weight, 2)
+        cc5.metric("Line Weight", f"{line_total_weight:,.2f} KG")
+
+        c_rack = cc6.text_input("Rack", value=str(primary_parent['rack']), key=f"c_rack_{i}")
+
+        if c_size and c_unit_weight > 0 and c_packets > 0:
             child_entries.append({
                 'size': c_size,
                 'type': c_type,
-                'weight': c_weight,
+                'packets': int(c_packets),
+                'unit_weight': float(c_unit_weight),
+                'total_weight': line_total_weight,
                 'rack': c_rack
             })
         st.markdown("---")
 
-    # Math balance calculation algorithms
-    actual_physical_sum = sum(item['weight'] for item in child_entries)
+    # Overall weight sum across all variants
+    actual_physical_sum = sum(item['total_weight'] for item in child_entries)
     weight_variance = round(actual_physical_sum - book_weight_to_deduct, 2)
 
     m_col1, m_col2 = st.columns(2)
@@ -216,7 +224,8 @@ def stock_sorting_management():
     # --- STEP 5: ATOMIC TRANSACTION CLEARANCE ROUTE ---
     if st.button("Commit Sorting Separation Loop", type="primary", use_container_width=True):
         if actual_physical_sum <= 0:
-            st.error("❌ You must log at least one sorted child entry with a weight greater than 0 KG.")
+            st.error(
+                "❌ You must log at least one sorted child entry with a valid packet count and weight greater than 0 KG.")
         else:
             try:
                 cursor = conn.cursor()
@@ -237,34 +246,40 @@ def stock_sorting_management():
                     for p_id in selected_parent_ids:
                         cursor.execute("UPDATE stock SET weight = 0, status = 'Sorted Out' WHERE id = %s", (int(p_id),))
 
-                # B. Insert the newborn sorted child rows
+                # B. Insert child packet rows into the stock database table
                 parent_tracking_label = ", ".join(map(str, selected_parent_ids))
+                total_created_packets = 0
+
                 for child in child_entries:
-                    cursor.execute("""
-                        INSERT INTO stock (
-                            invoice_no, invoiced_item_name, size, finish, "type", 
-                            material, mica_type, weight, godown, rack, status, received_at, parent_id, sorting_status
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Assorted')
-                    """, (
-                        primary_parent['invoice_no'],
-                        f"Sorted from Lots [{parent_tracking_label}]",
-                        child['size'],
-                        primary_parent['finish'],
-                        child['type'],
-                        primary_parent['material'],
-                        primary_parent['mica_type'],
-                        child['weight'],
-                        primary_parent['godown'],
-                        child['rack'],
-                        'Available',
-                        formatted_date_str,
-                        int(selected_parent_ids[0])  # Links tracking ancestry to the first active parent item
-                    ))
+                    # Loop through the packet count to generate individual packet records
+                    for p_idx in range(child['packets']):
+                        cursor.execute("""
+                            INSERT INTO stock (
+                                invoice_no, invoiced_item_name, size, finish, "type", 
+                                material, mica_type, weight, godown, rack, status, received_at, parent_id, sorting_status
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Assorted')
+                        """, (
+                            primary_parent['invoice_no'],
+                            f"Sorted from Lots [{parent_tracking_label}]",
+                            child['size'],
+                            primary_parent['finish'],
+                            child['type'],
+                            primary_parent['material'],
+                            primary_parent['mica_type'],
+                            child['unit_weight'],  # Stores individual packet weight
+                            primary_parent['godown'],
+                            child['rack'],
+                            'Available',
+                            formatted_date_str,
+                            int(selected_parent_ids[0])
+                        ))
+                        total_created_packets += 1
 
                 conn.commit()
                 cursor.close()
                 st.success(
-                    f"🎉 Allocation Successful! Cleaned {book_weight_to_deduct} KG from raw inventories and registered {actual_physical_sum} KG of precision child variants.")
+                    f"🎉 Allocation Successful! Cleaned {book_weight_to_deduct} KG from raw inventories and registered {total_created_packets} individual packets ({actual_physical_sum} KG total)."
+                )
                 st.rerun()
 
             except Exception as e:
