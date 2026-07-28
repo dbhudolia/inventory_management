@@ -11,6 +11,7 @@ import services.item_ledger as item_ledger
 import services.stock_sorting as stock_sorting
 import services.sales_price_editor as sales_price_editor
 import services.bulk_rack_transfer as bulk_rack_transfer
+import services.service_batch_lineage as service_batch_lineage
 from services.sales_analysis import sales_analysis_management
 import services.bulk_sales as bulk_sales
 
@@ -33,11 +34,12 @@ if 'logged_in' not in st.session_state:
 def main():
     st.sidebar.title("Warehouse Controls")
     # st.sidebar.title(f"Welcome, {st.session_state['username']}")
-    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Process Stock Sorting", "Stock Position",
+    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Stock Position",
                     "Inventory Search"]
 
     # Only show User Management to Admins
     if st.session_state['user_role'] == 'Admin':
+        menu_options.append("Item History Ledger")
         menu_options.append("Executive Sales Analysis")
         menu_options.append("Manage Users")
 
@@ -47,6 +49,8 @@ def main():
         menu_options.append("Sales Price Editor")
         menu_options.append("Item History Ledger")
         menu_options.append("Bulk Rack Transfer")
+        menu_options.append("Process Stock Sorting")
+        menu_options.append("Service Batch Lineage")
         menu_options.append("Executive Sales Analysis")
 
     page = st.sidebar.radio("Navigation", menu_options)
@@ -99,6 +103,10 @@ def main():
     # --- NEW PAGE: Rack Transfer ---
     elif page == "Bulk Rack Transfer":
         bulk_rack_transfer.bulk_rack_transfer_management()
+
+    # --- NEW PAGE: Batch Transfer ---
+    elif page == "Service Batch Lineage":
+        service_batch_lineage.sorted_batch_lineage_management()
     conn.close()
 
 # --- ROUTER ---
