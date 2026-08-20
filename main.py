@@ -15,103 +15,132 @@ import services.service_batch_lineage as service_batch_lineage
 from services.sales_analysis import sales_analysis_management
 import services.bulk_sales as bulk_sales
 import services.tally_stock_view as tally_stock_view
+import services.tally_sales_view as tally_sales_view
 
 # --- MUST BE THE FIRST ST COMMAND ---
 st.set_page_config(
     page_title="Mica Inventory System",
     page_icon="📦",
-    layout="wide", # This makes it Wide Mode by default
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
 helper.init_db()
 
-# --- AUTHENTICATION LOGIC ---
+# --- AUTHENTICATION & NAVIGATION STATE ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
     st.session_state['user_role'] = None
 
+if 'current_page' not in st.session_state:
+    st.session_state['current_page'] = "Dashboard"
+
 # --- MAIN APPLICATION ---
 def main():
     st.sidebar.title("Warehouse Controls")
-    # st.sidebar.title(f"Welcome, {st.session_state['username']}")
-    menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Stock Position",
-                    "Inventory Search", "Tally Stock"]
+    role = st.session_state.get('user_role', 'User')
 
-    # Only show User Management to Admins
-    if st.session_state['user_role'] == 'Admin':
-        menu_options.append("Item History Ledger")
-        menu_options.append("Executive Sales Analysis")
-        menu_options.append("Manage Users")
+    # --- CATEGORIZED NAVIGATION SECTIONS ---
+    nav_sections = {
+        "📊 Overview & Search": [
+            "Dashboard",
+            "Stock Position",
+            "Inventory Search"
+        ],
+        "🔄 Operations": [
+            "Inward Stock Entry",
+            "Out Order (Sales)"
+        ],
+        "🔗 Tally Live Data": [
+            "Tally Stock",
+            "Tally Sales"
+        ]
+    }
 
-    # Only show User Management to Admins
-    if st.session_state['user_role'] == 'Developer':
-        menu_options.append("Bulk Variant Sales")
-        menu_options.append("Sales Price Editor")
-        menu_options.append("Item History Ledger")
-        menu_options.append("Bulk Rack Transfer")
-        menu_options.append("Process Stock Sorting")
-        menu_options.append("Service Batch Lineage")
-        menu_options.append("Executive Sales Analysis")
+    if role in ['Admin', 'Developer']:
+        nav_sections["📈 Analytics & History"] = [
+            "Item History Ledger",
+            "Executive Sales Analysis"
+        ]
 
-    page = st.sidebar.radio("Navigation", menu_options)
+    if role == 'Developer':
+        nav_sections["⚙️ Processing & Transfers"] = [
+            "Bulk Variant Sales",
+            "Sales Price Editor",
+            "Bulk Rack Transfer",
+            "Process Stock Sorting",
+            "Service Batch Lineage"
+        ]
 
-    if st.sidebar.button("Logout"):
+    if role == 'Admin':
+        nav_sections["🔐 Administration"] = [
+            "Manage Users"
+        ]
+
+    # --- RENDER EXPANDABLE SIDEBAR MENUS ---
+    for section_title, pages in nav_sections.items():
+        # Keep the folder open if the current active page belongs to it
+        is_expanded = st.session_state['current_page'] in pages
+        with st.sidebar.expander(section_title, expanded=is_expanded):
+            for p in pages:
+                # Highlight active page button
+                btn_type = "primary" if st.session_state['current_page'] == p else "secondary"
+                if st.button(p, key=f"btn_{p}", type=btn_type, use_container_width=True):
+                    st.session_state['current_page'] = p
+                    st.rerun()
+
+    st.sidebar.divider()
+    if st.sidebar.button("🚪 Logout", use_container_width=True):
         st.session_state['logged_in'] = False
+        st.session_state['current_page'] = "Dashboard"
         st.rerun()
 
     conn = sqlite3.connect('inventory.db')
+    active_page = st.session_state['current_page']
 
-    # --- PAGE 1: DASHBOARD ---
-    if page == "Dashboard":
+    # --- PAGE ROUTING ---
+    # Overview & Search
+    if active_page == "Dashboard":
         inventory.inventory_management()
-
-    # --- PAGE 2: INWARD ENTRY ---
-    elif page == "Inward Stock Entry":
-        inward_stock.inward_stock_management()
-
-    # --- NEW PAGE: OUT ORDER ---
-    elif page == "Out Order (Sales)":
-        out_order.out_order_management()
-
-    elif page == "Bulk Variant Sales":
-        bulk_sales.rack_liquidation_management()
-
-    elif page == "Process Stock Sorting":
-        stock_sorting.stock_sorting_management()
-
-    # --- PAGE 5: SEARCH & FILTERS ---
-    elif page == "Inventory Search":
+    elif active_page == "Stock Position":
+        stock_position.stock_position_summary()
+    elif active_page == "Inventory Search":
         inventory_search.inventory_search_management()
 
-    elif page == "Stock Position":
-        stock_position.stock_position_summary()
+    # Operations
+    elif active_page == "Inward Stock Entry":
+        inward_stock.inward_stock_management()
+    elif active_page == "Out Order (Sales)":
+        out_order.out_order_management()
 
-    elif page == "Item History Ledger":
+    # Tally 9 Integration
+    elif active_page == "Tally Stock":
+        tally_stock_view.render_tally_stock_page()
+    elif active_page == "Tally Sales":
+        tally_sales_view.render_tally_sales_page()
+
+    # Analytics & History
+    elif active_page == "Item History Ledger":
         item_ledger.item_ledger_management()
-
-    elif page == "Executive Sales Analysis":
+    elif active_page == "Executive Sales Analysis":
         sales_analysis_management()
 
-    # --- NEW PAGE: MANAGE USERS ---
-    elif page == "Manage Users":
-        helper.manage_user()
-
-    # --- NEW PAGE: Sales ---
-    elif page == "Sales Price Editor":
+    # Processing & Transfers (Developer)
+    elif active_page == "Bulk Variant Sales":
+        bulk_sales.rack_liquidation_management()
+    elif active_page == "Sales Price Editor":
         sales_price_editor.sales_price_editor_management()
-
-    # --- NEW PAGE: Rack Transfer ---
-    elif page == "Bulk Rack Transfer":
+    elif active_page == "Bulk Rack Transfer":
         bulk_rack_transfer.bulk_rack_transfer_management()
-
-    # --- NEW PAGE: Batch Transfer ---
-    elif page == "Service Batch Lineage":
+    elif active_page == "Process Stock Sorting":
+        stock_sorting.stock_sorting_management()
+    elif active_page == "Service Batch Lineage":
         service_batch_lineage.sorted_batch_lineage_management()
 
-    # --- NEW PAGE: Tally Stock ---
-    elif page == "Tally Stock":
-        tally_stock_view.render_tally_stock_page()
+    # Administration (Admin)
+    elif active_page == "Manage Users":
+        helper.manage_user()
+
     conn.close()
 
 # --- ROUTER ---
