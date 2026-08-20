@@ -14,6 +14,7 @@ import services.bulk_rack_transfer as bulk_rack_transfer
 import services.service_batch_lineage as service_batch_lineage
 from services.sales_analysis import sales_analysis_management
 import services.bulk_sales as bulk_sales
+import services.tally_stock_view as tally_stock_view
 
 # --- MUST BE THE FIRST ST COMMAND ---
 st.set_page_config(
@@ -35,7 +36,7 @@ def main():
     st.sidebar.title("Warehouse Controls")
     # st.sidebar.title(f"Welcome, {st.session_state['username']}")
     menu_options = ["Dashboard", "Inward Stock Entry", "Out Order (Sales)", "Stock Position",
-                    "Inventory Search"]
+                    "Inventory Search", "Tally Stock"]
 
     # Only show User Management to Admins
     if st.session_state['user_role'] == 'Admin':
@@ -107,6 +108,10 @@ def main():
     # --- NEW PAGE: Batch Transfer ---
     elif page == "Service Batch Lineage":
         service_batch_lineage.sorted_batch_lineage_management()
+
+    # --- NEW PAGE: Tally Stock ---
+    elif page == "Tally Stock":
+        tally_stock_view.render_tally_stock_page()
     conn.close()
 
 # --- ROUTER ---
