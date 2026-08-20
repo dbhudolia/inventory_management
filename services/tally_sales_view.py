@@ -13,7 +13,6 @@ def get_db_connection():
     )
 
 def get_current_financial_year_dates():
-    """Calculates the Indian Financial Year (1-Apr to 31-Mar) based on today's date."""
     today = datetime.date.today()
     if today.month >= 4:
         start_date = datetime.date(today.year, 4, 1)
@@ -35,8 +34,8 @@ def render_tally_sales_page():
     # --- HEADER SECTION ---
     header_col, refresh_col = st.columns([5, 1])
     with header_col:
-        st.title("🧾 Tally Sales Register")
-        st.caption("Sales invoices and item dispatches synchronized from Tally 9")
+        st.title("🧾 Tally Sales Hub")
+        st.caption("Sales invoices, dispatch registers, and executive sales analytics from Tally 9")
 
     with refresh_col:
         st.write("")
@@ -50,10 +49,19 @@ def render_tally_sales_page():
         st.warning("⚠️ No sales records found. Run `sync_sales.bat` on your PC first.")
         return
 
-    # Ensure date format is date object
+    # Standardize data types
     v_df['voucher_date'] = pd.to_datetime(v_df['voucher_date']).dt.date
+    i_df['unit_of_measure'] = i_df['unit_of_measure'].fillna("").str.strip().str.upper()
+    i_df['billed_qty_numeric'] = pd.to_numeric(i_df['billed_qty_numeric'], errors='coerce').fillna(0.0)
 
-    # --- MAIN PAGE FILTERS (ROW 1) ---
+    # Recompute invoice-level KG and PCS dynamically from line items
+    vch_kg = i_df[i_df['unit_of_measure'].isin(['KG', 'KGS'])].groupby('voucher_id')['billed_qty_numeric'].sum().to_dict()
+    vch_pcs = i_df[i_df['unit_of_measure'].isin(['PCS', 'NOS', 'PIECES'])].groupby('voucher_id')['billed_qty_numeric'].sum().to_dict()
+
+    v_df['total_kg'] = v_df['voucher_id'].map(vch_kg).fillna(0.0)
+    v_df['total_pcs'] = v_df['voucher_id'].map(vch_pcs).fillna(0.0)
+
+    # --- TOP CONTROLS & DATE FILTER BAR ---
     default_start_fy, default_end_fy = get_current_financial_year_dates()
     today = datetime.date.today()
 
@@ -66,7 +74,6 @@ def render_tally_sales_page():
             index=0
         )
 
-    # Determine Date Range
     if date_preset == "Current Financial Year":
         filter_start, filter_end = default_start_fy, default_end_fy
     elif date_preset == "This Month":
@@ -78,39 +85,26 @@ def render_tally_sales_page():
     elif date_preset == "All Time":
         filter_start = v_df['voucher_date'].min()
         filter_end = v_df['voucher_date'].max()
-    else:  # Custom Range
+    else:
         filter_start, filter_end = default_start_fy, default_end_fy
 
     with f_col2:
         if date_preset == "Custom Range":
-            custom_range = st.date_input(
-                "Select Date Range",
-                value=(default_start_fy, default_end_fy)
-            )
+            custom_range = st.date_input("Select Date Range", value=(default_start_fy, default_end_fy))
             if isinstance(custom_range, tuple) and len(custom_range) == 2:
                 filter_start, filter_end = custom_range
         else:
-            st.text_input(
-                "Active Period",
-                value=f"{filter_start.strftime('%d/%m/%Y')} - {filter_end.strftime('%d/%m/%Y')}",
-                disabled=True
-            )
+            st.text_input("Active Period", value=f"{filter_start.strftime('%d/%m/%Y')} - {filter_end.strftime('%d/%m/%Y')}", disabled=True)
 
-    # Apply date filter first to populate relevant parties
     date_filtered_v = v_df[(v_df['voucher_date'] >= filter_start) & (v_df['voucher_date'] <= filter_end)].copy()
 
     with f_col3:
-        party_filter = st.selectbox(
-            "🏢 Customer / Party",
-            ["All Parties"] + sorted(date_filtered_v['party_name'].unique().tolist())
-        )
+        party_filter = st.selectbox("🏢 Customer / Party", ["All Parties"] + sorted(date_filtered_v['party_name'].unique().tolist()))
 
     with f_col4:
         search_txt = st.text_input("🔍 Search Item / Vch No", placeholder="e.g. 0.3 MM, GCF, SAVITA")
 
-    # Apply party & text filters
     filtered_v = date_filtered_v.copy()
-
     if party_filter != "All Parties":
         filtered_v = filtered_v[filtered_v['party_name'] == party_filter]
 
@@ -122,88 +116,175 @@ def render_tally_sales_page():
             filtered_v['voucher_id'].isin(matching_v_ids)
         ]
 
-    # --- TOP KPIS ---
-    total_qty = filtered_v['total_qty_kg'].sum()
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    kpi1.metric("Total Invoices", len(filtered_v))
-    kpi2.metric("Total Dispatched", f"{total_qty:,.2f} KG")
-    kpi3.metric("Unique Customers", filtered_v['party_name'].nunique())
-    kpi4.metric("Active Period", f"{filter_start.strftime('%d %b %Y')} - {filter_end.strftime('%d %b %Y')}")
+    # Matching items for filtered vouchers
+    filtered_items = i_df[i_df['voucher_id'].isin(filtered_v['voucher_id'])].copy()
+
+    # --- TOP EXECUTIVE KPIS ---
+    kg_total = filtered_items[filtered_items['unit_of_measure'].isin(['KG', 'KGS'])]['billed_qty_numeric'].sum()
+    pcs_total = filtered_items[filtered_items['unit_of_measure'].isin(['PCS', 'NOS', 'PIECES'])]['billed_qty_numeric'].sum()
+    total_invoices = len(filtered_v)
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total Invoices", f"{total_invoices:,}")
+    k2.metric("Total Weight (KG)", f"{kg_total:,.2f} KG")
+    k3.metric("Total Count (PCS)", f"{pcs_total:,.0f} PCS")
+    k4.metric("Unique Customers", f"{filtered_v['party_name'].nunique()}")
+    k5.metric("Line Items", f"{len(filtered_items):,}")
 
     st.divider()
 
-    # --- INTERACTIVE INVOICE TABLE ---
-    st.subheader(f"📑 Sales Invoices ({len(filtered_v)} records)")
-    st.caption("💡 **Tip:** Click on any row below to instantly view its item-level dispatches.")
+    # =========================================================================
+    # --- SIDE-BY-SIDE TABS (REGISTER & DRILL-DOWN vs. EXECUTIVE INSIGHTS) ---
+    # =========================================================================
+    tab_register, tab_insights = st.tabs([
+        "📑 Sales Register & Drill-Down",
+        "📊 Executive Sales Insights & Analytics"
+    ])
 
-    filtered_v = filtered_v.reset_index(drop=True)
+    # -------------------------------------------------------------------------
+    # TAB 1: SALES REGISTER & INTERACTIVE DRILL-DOWN
+    # -------------------------------------------------------------------------
+    with tab_register:
+        st.subheader(f"Invoices Ledger ({len(filtered_v)} matching records)")
+        st.caption("💡 **Tip:** Click on any row below to instantly inspect its line-item breakdown.")
 
-    # Table with Single-Row Selection
-    event = st.dataframe(
-        filtered_v[['voucher_date', 'voucher_number', 'party_name', 'buyer_address', 'total_qty_kg', 'total_items_count']],
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        column_config={
-            "voucher_date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
-            "voucher_number": "Vch No",
-            "party_name": "Party / Buyer",
-            "buyer_address": "Location",
-            "total_qty_kg": st.column_config.NumberColumn("Total Qty (KG)", format="%.3f"),
-            "total_items_count": "Items Count"
-        }
-    )
+        filtered_v = filtered_v.reset_index(drop=True)
 
-    # --- SYNC TABLE SELECTION WITH DROPDOWN ---
-    if 'selected_v_id' not in st.session_state:
-        st.session_state['selected_v_id'] = filtered_v['voucher_id'].iloc[0] if not filtered_v.empty else None
+        event = st.dataframe(
+            filtered_v[['voucher_date', 'voucher_number', 'party_name', 'buyer_address', 'total_kg', 'total_pcs', 'total_items_count']],
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            column_config={
+                "voucher_date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                "voucher_number": "Vch No",
+                "party_name": "Party / Buyer",
+                "buyer_address": "Location",
+                "total_kg": st.column_config.NumberColumn("Total Weight (KG)", format="%.3f"),
+                "total_pcs": st.column_config.NumberColumn("Total Count (PCS)", format="%.0f"),
+                "total_items_count": "Line Items"
+            }
+        )
 
-    # Update selection on row click
-    if event and event.selection and event.selection.rows:
-        selected_row_idx = event.selection.rows[0]
-        st.session_state['selected_v_id'] = filtered_v.iloc[selected_row_idx]['voucher_id']
+        if 'selected_v_id' not in st.session_state:
+            st.session_state['selected_v_id'] = filtered_v['voucher_id'].iloc[0] if not filtered_v.empty else None
 
-    st.divider()
+        if event and event.selection and event.selection.rows:
+            selected_row_idx = event.selection.rows[0]
+            st.session_state['selected_v_id'] = filtered_v.iloc[selected_row_idx]['voucher_id']
 
-    # --- DRILL DOWN SECTION ---
-    st.subheader("🔍 Voucher Item Drill-Down")
+        st.divider()
 
-    if filtered_v.empty:
-        st.info("No matching vouchers found in the selected range.")
-        return
+        st.subheader("🔍 Voucher Item Drill-Down")
+        if filtered_v.empty:
+            st.info("No matching vouchers found.")
+        else:
+            vch_options = filtered_v['voucher_id'].tolist()
+            vch_lookup = filtered_v.set_index('voucher_id').to_dict('index')
 
-    vch_options = filtered_v['voucher_id'].tolist()
-    vch_lookup = filtered_v.set_index('voucher_id').to_dict('index')
+            if st.session_state['selected_v_id'] not in vch_options:
+                st.session_state['selected_v_id'] = vch_options[0]
 
-    if st.session_state['selected_v_id'] not in vch_options:
-        st.session_state['selected_v_id'] = vch_options[0]
+            current_index = vch_options.index(st.session_state['selected_v_id'])
 
-    current_index = vch_options.index(st.session_state['selected_v_id'])
+            selected_v_id = st.selectbox(
+                "Selected Invoice:",
+                options=vch_options,
+                index=current_index,
+                format_func=lambda x: f"Vch #{vch_lookup[x]['voucher_number']} | Date: {vch_lookup[x]['voucher_date'].strftime('%d-%m-%Y')} | {vch_lookup[x]['party_name']}"
+            )
 
-    selected_v_id = st.selectbox(
-        "Selected Invoice:",
-        options=vch_options,
-        index=current_index,
-        format_func=lambda x: f"Vch #{vch_lookup[x]['voucher_number']} | Date: {vch_lookup[x]['voucher_date'].strftime('%d-%m-%Y')} | {vch_lookup[x]['party_name']} ({vch_lookup[x]['total_qty_kg']:.2f} KG)"
-    )
+            if selected_v_id:
+                v_items = i_df[i_df['voucher_id'] == selected_v_id]
+                if not v_items.empty:
+                    st.dataframe(
+                        v_items[['item_name', 'billed_qty_numeric', 'actual_qty_numeric', 'unit_of_measure', 'godown', 'batch_name']],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "item_name": st.column_config.TextColumn("Stock Item Description", width="large"),
+                            "billed_qty_numeric": st.column_config.NumberColumn("Billed Qty", format="%.3f"),
+                            "actual_qty_numeric": st.column_config.NumberColumn("Actual Qty", format="%.3f"),
+                            "unit_of_measure": "UOM",
+                            "godown": "Godown Location",
+                            "batch_name": "Batch Name"
+                        }
+                    )
+                else:
+                    st.info("No line items found for this voucher.")
 
-    # Display line items
-    if selected_v_id:
-        v_items = i_df[i_df['voucher_id'] == selected_v_id]
-        if not v_items.empty:
+    # -------------------------------------------------------------------------
+    # TAB 2: EXECUTIVE SALES INSIGHTS & ANALYTICS
+    # -------------------------------------------------------------------------
+    with tab_insights:
+        if not filtered_v.empty and not filtered_items.empty:
+            # 1. Party Aggregates strictly for KG
+            party_items_kg = filtered_items[filtered_items['unit_of_measure'].isin(['KG', 'KGS'])]
+            party_kg_agg = party_items_kg.groupby(
+                party_items_kg['voucher_id'].map(filtered_v.set_index('voucher_id')['party_name'])
+            )['billed_qty_numeric'].sum().reset_index(name='total_kg').sort_values(by='total_kg', ascending=False)
+
+            top_party_name = party_kg_agg.iloc[0]['voucher_id'] if not party_kg_agg.empty else "N/A"
+            top_party_kg = party_kg_agg.iloc[0]['total_kg'] if not party_kg_agg.empty else 0.0
+            top_party_share = (top_party_kg / kg_total * 100) if kg_total > 0 else 0.0
+
+            # 2. Item Aggregates (Item + Unit)
+            item_agg = filtered_items.groupby(['item_name', 'unit_of_measure']).agg(
+                total_sold=('billed_qty_numeric', 'sum'),
+                dispatch_count=('voucher_id', 'count')
+            ).reset_index().sort_values(by='total_sold', ascending=False)
+
+            top_item = item_agg.iloc[0]
+
+            # Executive Highlight Cards
+            c_card1, c_card2 = st.columns(2)
+            with c_card1:
+                st.info(
+                    f"🏆 **Top Buyer (Weight Volume):** **{top_party_name}**\n\n"
+                    f"• **Dispatched:** `{top_party_kg:,.2f} KG` ({top_party_share:.1f}% of total weight)\n\n"
+                    f"• **Invoices:** `{filtered_v[filtered_v['party_name'] == top_party_name]['voucher_id'].count()}` orders"
+                )
+            with c_card2:
+                st.success(
+                    f"📦 **Top Selling Product:** **{top_item['item_name']}**\n\n"
+                    f"• **Volume Sold:** `{top_item['total_sold']:,.2f} {top_item['unit_of_measure']}`\n\n"
+                    f"• **Dispatch Frequency:** Sold across `{top_item['dispatch_count']}` invoices"
+                )
+
+            st.divider()
+
+            # Side-by-side Visual Charts
+            chart_col1, chart_col2 = st.columns(2)
+            with chart_col1:
+                st.markdown("#### 🏢 Top 5 Buyers by Weight (KG)")
+                if not party_kg_agg.empty:
+                    top5_p = party_kg_agg.head(5).set_index('voucher_id')[['total_kg']]
+                    st.bar_chart(top5_p, horizontal=True)
+
+            with chart_col2:
+                st.markdown("#### 🏷️ Top 5 Products by Weight (KG)")
+                kg_items_agg = item_agg[item_agg['unit_of_measure'].isin(['KG', 'KGS'])].head(5)
+                if not kg_items_agg.empty:
+                    top5_i = kg_items_agg.set_index('item_name')[['total_sold']]
+                    st.bar_chart(top5_i, horizontal=True)
+
+            st.divider()
+
+            # Full Item Analytics Table
+            st.markdown("#### 📋 Complete Item Dispatch & Movement Summary")
+            item_agg['avg_per_dispatch'] = item_agg['total_sold'] / item_agg['dispatch_count']
             st.dataframe(
-                v_items[['item_name', 'billed_qty_numeric', 'actual_qty_numeric', 'unit_of_measure', 'godown', 'batch_name']],
+                item_agg,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "item_name": st.column_config.TextColumn("Stock Item Description", width="large"),
-                    "billed_qty_numeric": st.column_config.NumberColumn("Billed Qty", format="%.3f"),
-                    "actual_qty_numeric": st.column_config.NumberColumn("Actual Qty", format="%.3f"),
                     "unit_of_measure": "UOM",
-                    "godown": "Godown Location",
-                    "batch_name": "Batch Name"
+                    "total_sold": st.column_config.NumberColumn("Total Sold", format="%.3f"),
+                    "dispatch_count": "Invoices Count",
+                    "avg_per_dispatch": st.column_config.NumberColumn("Avg / Dispatch", format="%.2f")
                 }
             )
         else:
-            st.info("No line-item entries found for this voucher.")
+            st.info("No sufficient data in the selected period to generate insights.")
