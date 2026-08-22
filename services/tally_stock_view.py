@@ -3,6 +3,10 @@ import psycopg2
 import pandas as pd
 import datetime
 
+# Set to True whenever you want to include AAA Balance +- in calculations & display
+INCLUDE_AAA_BALANCE = False
+
+
 @st.cache_data(ttl=30)
 def fetch_tally_stock_data():
     try:
@@ -56,6 +60,10 @@ def render_tally_stock_page():
     # --- DATA NORMALIZATION ---
     df["Unit"] = df["Unit"].fillna("").str.strip().str.upper()
     df["Stock Qty"] = pd.to_numeric(df["Stock Qty"], errors="coerce").fillna(0.0)
+
+    # --- EXCLUDE AAA BALANCE IF TOGGLED OFF ---
+    if not INCLUDE_AAA_BALANCE:
+        df = df[~df["Item Name"].str.upper().str.contains("AAA BALANCE", na=False)]
 
     last_sync_time = df["Last Synced"].dropna().max()
     formatted_time = last_sync_time.strftime("%d %b %Y, %I:%M %p") if pd.notnull(last_sync_time) else "N/A"
