@@ -65,7 +65,6 @@ def sales_analysis_management():
     size_opts = ["All Sizes"] + sorted(df_raw_sales['Size'].dropna().unique().tolist())
     selected_size = sf2.selectbox("Sheet Dimensions", size_opts, key="an_size")
 
-    # Default date range: current calendar year to today
     default_start_date = date(datetime.today().year, 1, 1)
     date_range = sf3.date_input("Accounting Range", value=(default_start_date, datetime.today().date()), key="an_date")
 
@@ -105,7 +104,7 @@ def sales_analysis_management():
     st.divider()
 
     # -----------------------------------------------------------------
-    # DYNAMIC KEY PERFORMANCE METRICS (COMPUTED ON FILTERED DATA)
+    # DYNAMIC KEY PERFORMANCE METRICS
     # -----------------------------------------------------------------
     st.subheader("📊 Key Performance Metrics")
     m1, m2, m3, m4 = st.columns(4)
@@ -129,11 +128,11 @@ def sales_analysis_management():
     ])
 
     # -----------------------------------------------------------------
-    # TAB 1: DATE-WISE PARTY SUMMARY + GROUPED BY SIZE DRILL-DOWN
+    # TAB 1: DATE-WISE PARTY SUMMARY + SIZE DRILL-DOWN (WITH NOTES)
     # -----------------------------------------------------------------
     with tab1:
         st.markdown("##### 📅 Date-wise Party Dispatch Summary")
-        st.caption("High-level totals per company and date. Click any row to view the size-wise summary.")
+        st.caption("High-level totals per company and date. Click any row to view the size-wise summary with transaction notes.")
 
         if df_filtered.empty:
             st.warning("No sales records match the selected filter criteria.")
@@ -150,7 +149,6 @@ def sales_analysis_management():
 
             party_date_summary['event_token'] = party_date_summary['Date'].astype(str) + " | " + party_date_summary['Company']
 
-            # Interactive DataFrame with Single Row Selection
             event = st.dataframe(
                 party_date_summary[['Date', 'Company', 'total_qty', 'total_revenue', 'invoice_count', 'packet_count']],
                 use_container_width=True,
@@ -176,7 +174,7 @@ def sales_analysis_management():
 
             st.divider()
 
-            # --- DRILL DOWN: GROUPED BY SIZE ---
+            # --- DRILL DOWN: GROUPED BY SIZE (WITH TRANSACTION NOTES) ---
             st.subheader("🔍 Size-Wise Variant Summary Drill-Down")
 
             available_tokens = party_date_summary['event_token'].tolist()
@@ -201,7 +199,6 @@ def sales_analysis_management():
                     (df_filtered['Company'] == sel_comp)
                 ]
 
-                # Metric Cards for Selected Dispatch
                 d_qty = raw_event_df['Quantity'].sum()
                 d_rev = raw_event_df['Revenue'].sum()
                 d_avg_rate = (d_rev / d_qty) if d_qty > 0 else 0.0
@@ -212,7 +209,7 @@ def sales_analysis_management():
                 dc3.metric("Invoice Revenue", f"₹ {d_rev:,.2f}")
                 dc4.metric("Avg Rate / KG", f"₹ {d_avg_rate:,.2f}")
 
-                # Group by Size Variants
+                # Group by Size Variants and aggregate distinct notes
                 size_grouped_df = raw_event_df.groupby(
                     ['Size', 'Finish', 'Material', 'Type', 'Mica Type'],
                     dropna=False,
@@ -221,7 +218,8 @@ def sales_analysis_management():
                     total_qty=('Quantity', 'sum'),
                     total_revenue=('Revenue', 'sum'),
                     packets_packed=('id', 'count'),
-                    invoices=('Invoice No', lambda x: ", ".join(sorted(set(str(v) for v in x if pd.notnull(v)))))
+                    invoices=('Invoice No', lambda x: ", ".join(sorted(set(str(v).strip() for v in x if pd.notnull(v) and str(v).strip() != "")))),
+                    transaction_notes=('Notes', lambda x: " | ".join(sorted(set(str(v).strip() for v in x if pd.notnull(v) and str(v).strip() != ""))))
                 )
 
                 size_grouped_df['avg_rate_per_kg'] = size_grouped_df['total_revenue'] / size_grouped_df['total_qty']
@@ -232,7 +230,7 @@ def sales_analysis_management():
                 st.dataframe(
                     size_grouped_df[[
                         'Size', 'Finish', 'Material', 'Type', 'Mica Type',
-                        'total_qty', 'avg_rate_per_kg', 'total_revenue', 'packets_packed', 'invoices'
+                        'total_qty', 'avg_rate_per_kg', 'total_revenue', 'packets_packed', 'invoices', 'transaction_notes'
                     ]],
                     use_container_width=True,
                     hide_index=True,
@@ -246,7 +244,8 @@ def sales_analysis_management():
                         "avg_rate_per_kg": st.column_config.NumberColumn("Avg Rate / KG (₹)", format="₹ %.2f"),
                         "total_revenue": st.column_config.NumberColumn("Total Value (₹)", format="₹ %.2f"),
                         "packets_packed": st.column_config.NumberColumn("Packets (#)"),
-                        "invoices": st.column_config.TextColumn("Invoices Included", width="medium")
+                        "invoices": st.column_config.TextColumn("Invoices Included", width="small"),
+                        "transaction_notes": st.column_config.TextColumn("Transaction Notes", width="large")
                     }
                 )
 
