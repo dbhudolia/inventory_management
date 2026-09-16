@@ -42,15 +42,6 @@ def main():
 
     # --- CATEGORIZED NAVIGATION SECTIONS ---
     nav_sections = {
-        "📊 Overview & Search": [
-            "Dashboard",
-            "Stock Position",
-            "Inventory Search"
-        ],
-        "🔄 Operations": [
-            "Inward Stock Entry",
-            "Out Order (Sales)"
-        ],
         "🔗 Tally Live Data": [
             "Tally Stock",
             "Tally Sales"
@@ -70,6 +61,15 @@ def main():
             "Bulk Rack Transfer",
             "Process Stock Sorting",
             "Service Batch Lineage"
+        ]
+        nav_sections["📊 Overview & Search"] = [
+            "Dashboard",
+            "Stock Position",
+            "Inventory Search"
+        ]
+        nav_sections["🔄 Operations"] = [
+            "Inward Stock Entry",
+            "Out Order (Sales)"
         ]
 
     if role == 'Admin':
@@ -92,7 +92,7 @@ def main():
     st.sidebar.divider()
     if st.sidebar.button("🚪 Logout", use_container_width=True):
         st.session_state['logged_in'] = False
-        st.session_state['current_page'] = "Dashboard"
+        st.session_state['current_page'] = "Tally Stock"
         st.rerun()
 
     conn = sqlite3.connect('inventory.db')
