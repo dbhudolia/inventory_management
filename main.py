@@ -16,6 +16,7 @@ from services.sales_analysis import sales_analysis_management
 import services.bulk_sales as bulk_sales
 import services.tally_stock_view as tally_stock_view
 import services.tally_sales_view as tally_sales_view
+import services.tally_analysis as tally_analysis
 
 # --- MUST BE THE FIRST ST COMMAND ---
 st.set_page_config(
@@ -33,7 +34,7 @@ if 'logged_in' not in st.session_state:
     st.session_state['user_role'] = None
 
 if 'current_page' not in st.session_state:
-    st.session_state['current_page'] = "Dashboard"
+    st.session_state['current_page'] = "Tally Stock"
 
 # --- MAIN APPLICATION ---
 def main():
@@ -44,11 +45,12 @@ def main():
     nav_sections = {
         "🔗 Tally Live Data": [
             "Tally Stock",
-            "Tally Sales"
+            "Tally Sales",
+            "Analytics"
         ]
     }
 
-    if role in ['Admin', 'Developer']:
+    if role in ['Developer']:
         nav_sections["📈 Analytics & History"] = [
             "Item History Ledger",
             "Executive Sales Analysis"
@@ -118,6 +120,8 @@ def main():
         tally_stock_view.render_tally_stock_page()
     elif active_page == "Tally Sales":
         tally_sales_view.render_tally_sales_page()
+    elif active_page == "Analytics":
+        tally_analysis.render_advanced_analysis_page()
 
     # Analytics & History
     elif active_page == "Item History Ledger":
